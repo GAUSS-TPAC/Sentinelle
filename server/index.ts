@@ -1,6 +1,9 @@
 import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import {
   CLASSIFICATION_SYSTEM_PROMPT,
   buildClassificationPrompt,
@@ -348,6 +351,18 @@ app.post('/api/generate-report', (req, res) => {
   const report = buildComplianceReport(tickets, resolvedPatterns);
   res.json({ report, markdown: complianceReportToMarkdown(report) });
 });
+
+// Service unique en production (Railway/Render) : Express sert le build Vite (dist/) en
+// plus de l'API, sur le même port. En dev, Vite sert le frontend séparément (port 5173)
+// et proxy /api vers ce serveur — voir vite.config.ts.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DIST_DIR = path.resolve(__dirname, '..', 'dist');
+if (existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+  app.get(/^(?!\/api).*/, (_req, res) => {
+    res.sendFile(path.join(DIST_DIR, 'index.html'));
+  });
+}
 
 app.listen(PORT, () => {
   console.log(

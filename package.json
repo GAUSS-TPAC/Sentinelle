@@ -9,7 +9,8 @@
     "dev:client": "vite",
     "dev:server": "tsx server/index.ts",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "NODE_ENV=production tsx server/index.ts"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.0",
