@@ -1,6 +1,15 @@
 import express from 'express';
 import cors from 'cors';
 import 'dotenv/config';
+import {
+  CLASSIFICATION_SYSTEM_PROMPT,
+  buildClassificationPrompt,
+  heuristicClassify,
+  parseClassification,
+} from '../src/lib/ticketClassifier.ts';
+import { detectPatterns } from '../src/lib/patternDetection.ts';
+import { buildComplianceReport, complianceReportToMarkdown } from '../src/lib/complianceReport.ts';
+import type { Ticket } from '../src/lib/types.ts';
 
 const app = express();
 const PORT = Number(process.env.API_PORT ?? process.env.PORT) || 3001;
@@ -273,8 +282,58 @@ async function callSelfHostedRaw(
   return text;
 }
 
-// TODO (étape 2.5, après validation de la taxonomie causale + schéma Supabase) :
-//   POST /api/classify-ticket, GET /api/patterns, POST /api/generate-report
+app.post('/api/classify-ticket', async (req, res) => {
+  const { texte_brut: texteBrut, provider } = req.body as { texte_brut?: string; provider?: string };
+
+  if (!texteBrut?.trim()) {
+    res.status(400).json({ error: 'texte_brut is required' });
+    return;
+  }
+
+  try {
+    const { text, provider: usedProvider, model } = await generateAIText(
+      CLASSIFICATION_SYSTEM_PROMPT,
+      buildClassificationPrompt(texteBrut),
+    );
+    const classification = parseClassification(text);
+    res.json({ ...classification, provider: provider ?? usedProvider, model, source: 'ai' });
+  } catch (err) {
+    // Filet de sécurité : on ne bloque jamais un ticket faute d'IA disponible.
+    const fallback = heuristicClassify(texteBrut);
+    res.json({
+      ...fallback,
+      provider: 'heuristic',
+      model: 'keyword-fallback',
+      source: 'fallback',
+      error: err instanceof Error ? err.message : 'AI classification failed',
+    });
+  }
+});
+
+app.post('/api/patterns', (req, res) => {
+  const { tickets } = req.body as { tickets?: Ticket[] };
+
+  if (!Array.isArray(tickets)) {
+    res.status(400).json({ error: 'tickets array is required' });
+    return;
+  }
+
+  const patterns = detectPatterns(tickets);
+  res.json({ patterns });
+});
+
+app.post('/api/generate-report', (req, res) => {
+  const { tickets, patterns } = req.body as { tickets?: Ticket[]; patterns?: ReturnType<typeof detectPatterns> };
+
+  if (!Array.isArray(tickets)) {
+    res.status(400).json({ error: 'tickets array is required' });
+    return;
+  }
+
+  const resolvedPatterns = patterns ?? detectPatterns(tickets);
+  const report = buildComplianceReport(tickets, resolvedPatterns);
+  res.json({ report, markdown: complianceReportToMarkdown(report) });
+});
 
 app.listen(PORT, () => {
   console.log(
