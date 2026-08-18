@@ -66,12 +66,17 @@ function isRetryableAIError(err: unknown): boolean {
 export async function generateAIText(
   systemPrompt: string,
   userPrompt: string,
+  forceProvider?: 'openai' | 'gemini' | 'anthropic' | 'selfhosted',
 ): Promise<{ text: string; provider: string; model: string }> {
   const geminiKey = process.env.GEMINI_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 45000);
+  // Ollama en CPU peut prendre du temps à charger le modèle en mémoire au premier appel
+  // ("cold start") — mesuré ~28s une fois chaud, mais le tout premier appel peut dépasser
+  // 45s. Les providers cloud n'ont pas ce problème.
+  const timeoutMs = (forceProvider ?? AI_PROVIDER) === 'selfhosted' ? 90000 : 45000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const failures: string[] = [];
 
   try {
@@ -142,14 +147,17 @@ export async function generateAIText(
       return { text, provider: 'selfhosted', model: SELF_HOSTED_MODEL };
     };
 
+    // Une requête peut forcer un provider précis (ex: sélecteur cloud/auto-hébergé dans
+    // l'UI) sans redémarrer le serveur ; sinon on retombe sur AI_PROVIDER défini en .env.
+    const effectiveProvider = forceProvider ?? AI_PROVIDER;
     const providerOrder: Array<'openai' | 'gemini' | 'anthropic' | 'selfhosted'> =
-      AI_PROVIDER === 'openai'
+      effectiveProvider === 'openai'
         ? ['openai']
-        : AI_PROVIDER === 'gemini'
+        : effectiveProvider === 'gemini'
           ? ['gemini']
-          : AI_PROVIDER === 'anthropic'
+          : effectiveProvider === 'anthropic'
             ? ['anthropic']
-            : AI_PROVIDER === 'selfhosted'
+            : effectiveProvider === 'selfhosted'
               ? ['selfhosted']
               : ['openai', 'gemini', 'anthropic'];
 
@@ -169,7 +177,7 @@ export async function generateAIText(
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         failures.push(`${provider}: ${msg.slice(0, 160)}`);
-        if (AI_PROVIDER !== 'auto') throw err;
+        if (effectiveProvider !== 'auto') throw err;
         console.warn(`${provider} failed, trying next provider:`, msg.slice(0, 120));
       }
     }
@@ -290,13 +298,19 @@ app.post('/api/classify-ticket', async (req, res) => {
     return;
   }
 
+  const forceProvider =
+    provider === 'gemini' || provider === 'anthropic' || provider === 'openai' || provider === 'selfhosted'
+      ? provider
+      : undefined;
+
   try {
     const { text, provider: usedProvider, model } = await generateAIText(
       CLASSIFICATION_SYSTEM_PROMPT,
       buildClassificationPrompt(texteBrut),
+      forceProvider,
     );
     const classification = parseClassification(text);
-    res.json({ ...classification, provider: provider ?? usedProvider, model, source: 'ai' });
+    res.json({ ...classification, provider: usedProvider, model, source: 'ai' });
   } catch (err) {
     // Filet de sécurité : on ne bloque jamais un ticket faute d'IA disponible.
     const fallback = heuristicClassify(texteBrut);
