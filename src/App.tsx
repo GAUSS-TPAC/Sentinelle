@@ -1,31 +1,60 @@
-import { AlertTriangle, Download, FileText, Loader2, ShieldAlert, Upload } from 'lucide-react';
+import { AlertTriangle, Cloud, Download, FileText, Loader2, ShieldCheck, Upload } from 'lucide-react';
+import { SegmentedControl } from '@/components/SegmentedControl';
 import { useTicketWorkspace } from '@/hooks/useTicketWorkspace';
 import { downloadText } from '@/lib/dataExporter';
+import { categoryTagStyle } from '@/lib/categoryColor';
 import type { DetectedPattern } from '@/lib/types';
 
-const SEVERITY_STYLES: Record<DetectedPattern['severite'], string> = {
-  critique: 'bg-red-950 border-red-700 text-red-200',
-  elevee: 'bg-orange-950 border-orange-700 text-orange-200',
-  moyenne: 'bg-yellow-950 border-yellow-700 text-yellow-200',
-  faible: 'bg-neutral-800 border-neutral-600 text-neutral-300',
+const SEVERITY_LABEL: Record<DetectedPattern['severite'], string> = {
+  critique: 'Critique',
+  elevee: 'Élevée',
+  moyenne: 'Moyenne',
+  faible: 'Faible',
 };
 
-const CATEGORY_COLORS = [
-  'bg-sky-900 text-sky-200',
-  'bg-purple-900 text-purple-200',
-  'bg-emerald-900 text-emerald-200',
-  'bg-amber-900 text-amber-200',
-  'bg-rose-900 text-rose-200',
-  'bg-indigo-900 text-indigo-200',
-  'bg-teal-900 text-teal-200',
-  'bg-fuchsia-900 text-fuchsia-200',
-  'bg-lime-900 text-lime-200',
-  'bg-neutral-700 text-neutral-200',
-];
+const SEVERITY_COLOR: Record<DetectedPattern['severite'], string> = {
+  critique: 'var(--color-danger-critical)',
+  elevee: 'var(--color-danger-high)',
+  moyenne: 'var(--color-warning)',
+  faible: 'var(--color-ink-faint)',
+};
 
-function categoryColor(categorie: string, allCategories: string[]): string {
-  const index = allCategories.indexOf(categorie);
-  return CATEGORY_COLORS[index % CATEGORY_COLORS.length] ?? CATEGORY_COLORS[CATEGORY_COLORS.length - 1];
+function Logomark() {
+  return (
+    <div className="w-9 h-9 rounded-[9px] bg-elevated border border-line flex items-center justify-center shrink-0">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="7" r="2.4" />
+        <path d="M12 9.4 V13 M12 13 L6.5 19 M12 13 L12 19.5 M12 13 L17.5 19" />
+        <circle cx="6.5" cy="19.6" r="1.3" />
+        <circle cx="12" cy="20.1" r="1.3" />
+        <circle cx="17.5" cy="19.6" r="1.3" />
+      </svg>
+    </div>
+  );
+}
+
+function PatternBanner({ pattern }: { pattern: DetectedPattern }) {
+  const color = SEVERITY_COLOR[pattern.severite];
+  return (
+    <div
+      className="flex items-center gap-3.5 px-4 py-3 rounded-lg border"
+      style={{ backgroundColor: `color-mix(in oklch, ${color} 9%, var(--color-surface))`, borderColor: `color-mix(in oklch, ${color} 28%, var(--color-line))` }}
+    >
+      <div
+        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0"
+        style={{ backgroundColor: `color-mix(in oklch, ${color} 20%, transparent)` }}
+      >
+        <AlertTriangle className="w-4 h-4" style={{ color }} />
+      </div>
+      <p className="flex-1 text-[13.5px] text-ink">{pattern.description}</p>
+      <span
+        className="font-mono text-[10px] font-semibold uppercase tracking-wide px-2.5 py-1 rounded"
+        style={{ color, backgroundColor: `color-mix(in oklch, ${color} 16%, transparent)` }}
+      >
+        {SEVERITY_LABEL[pattern.severite]}
+      </span>
+    </div>
+  );
 }
 
 export default function App() {
@@ -46,156 +75,189 @@ export default function App() {
     generateReport,
   } = useTicketWorkspace();
 
-  const categories = [...new Set(tickets.map((t) => t.categorie_causale).filter(Boolean))];
   const hasClassified = tickets.some((t) => t.categorie_causale);
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100">
-      <header className="border-b border-neutral-800 px-6 py-4 flex items-center justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-xl font-semibold">Racine</h1>
-          <p className="text-sm text-neutral-500">
-            Triage causal de réclamations bancaires — zone CEMAC
-          </p>
+    <div className="min-h-screen bg-base text-ink font-sans">
+      {/* ===== En-tête ===== */}
+      <header className="flex items-center justify-between gap-4 flex-wrap px-8 py-5 border-b border-line-soft bg-surface">
+        <div className="flex items-center gap-3.5">
+          <Logomark />
+          <div>
+            <div className="text-base font-semibold tracking-tight leading-tight">Racine</div>
+            <div className="font-mono text-[10.5px] tracking-wide uppercase text-ink-faint mt-0.5">
+              Triage causal · zone CEMAC
+            </div>
+          </div>
         </div>
 
-        <div className="flex items-center gap-2">
-          <label htmlFor="provider" className="text-sm text-neutral-400">
-            Provider IA
-          </label>
-          <select
-            id="provider"
+        <div className="flex items-center gap-5">
+          <div className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-success)_22%,transparent)]" />
+            <span className="text-[12.5px] text-ink-soft">Service actif</span>
+          </div>
+
+          <SegmentedControl
+            label="Provider IA"
             value={provider}
-            onChange={(e) => setProvider(e.target.value as 'gemini' | 'selfhosted')}
-            className="bg-neutral-900 border border-neutral-700 rounded px-2 py-1 text-sm"
-          >
-            <option value="gemini">☁️ Cloud (Gemini)</option>
-            <option value="selfhosted">🔒 Auto-hébergé (Ollama / Gemma)</option>
-          </select>
+            onValueChange={(v) => setProvider(v as 'gemini' | 'selfhosted')}
+            options={[
+              {
+                value: 'gemini',
+                ariaLabel: 'Cloud · Gemini',
+                label: (
+                  <>
+                    <Cloud className="w-3.5 h-3.5" />
+                    Cloud · Gemini
+                  </>
+                ),
+              },
+              {
+                value: 'selfhosted',
+                ariaLabel: 'Auto-hébergé · Ollama',
+                label: (
+                  <>
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    Auto-hébergé · Ollama
+                  </>
+                ),
+              },
+            ]}
+          />
         </div>
       </header>
 
-      <main className="p-6 space-y-4">
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            onClick={loadSampleTickets}
-            disabled={isLoading}
-            className="inline-flex items-center gap-2 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-50 px-3 py-2 rounded text-sm"
-          >
-            {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-            Charger l'échantillon (150 tickets)
-          </button>
+      {/* ===== Barre d'outils ===== */}
+      <div className="flex items-center gap-3 px-8 py-4.5 border-b border-line-soft flex-wrap">
+        <button
+          onClick={loadSampleTickets}
+          disabled={isLoading}
+          className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-line bg-surface text-ink text-[13px] font-medium disabled:opacity-50 hover:bg-elevated transition-colors"
+        >
+          {isLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+          Charger l'échantillon
+        </button>
 
-          <button
-            onClick={classifyAll}
-            disabled={tickets.length === 0 || isClassifying}
-            className="inline-flex items-center gap-2 bg-sky-800 hover:bg-sky-700 disabled:opacity-50 px-3 py-2 rounded text-sm"
-          >
-            {isClassifying ? <Loader2 className="w-4 h-4 animate-spin" /> : <ShieldAlert className="w-4 h-4" />}
-            {isClassifying
-              ? `Classification… ${classifyProgress.done}/${classifyProgress.total}`
-              : 'Classer les tickets'}
-          </button>
+        <button
+          onClick={classifyAll}
+          disabled={tickets.length === 0 || isClassifying}
+          className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-[13px] font-semibold disabled:opacity-50 transition-colors"
+          style={{ backgroundColor: 'var(--color-accent)', color: 'var(--color-accent-ink)' }}
+        >
+          {isClassifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+          {isClassifying ? `Classification… ${classifyProgress.done}/${classifyProgress.total}` : 'Classer les tickets'}
+        </button>
 
-          <button
-            onClick={generateReport}
-            disabled={!hasClassified || isGeneratingReport}
-            className="inline-flex items-center gap-2 bg-emerald-800 hover:bg-emerald-700 disabled:opacity-50 px-3 py-2 rounded text-sm"
-          >
-            {isGeneratingReport ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
-            Générer le rapport de conformité
-          </button>
+        <button
+          onClick={generateReport}
+          disabled={!hasClassified || isGeneratingReport}
+          className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-line bg-surface text-ink text-[13px] font-medium disabled:opacity-50 hover:bg-elevated transition-colors"
+        >
+          {isGeneratingReport ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+          Générer le rapport de conformité
+        </button>
 
-          {accuracy && (
-            <span className="text-sm text-neutral-400 ml-auto">
-              Précision vs. étiquette de référence : {accuracy.correct}/{accuracy.total} (
-              {(accuracy.ratio * 100).toFixed(0)}%)
+        {accuracy && (
+          <div className="ml-auto flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface border border-line-soft">
+            <span className="font-mono text-xs text-ink-soft">Précision vs. référence</span>
+            <span className="font-mono text-xs font-semibold text-success">
+              {accuracy.correct}/{accuracy.total} · {(accuracy.ratio * 100).toFixed(0)}%
             </span>
-          )}
-        </div>
+          </div>
+        )}
+      </div>
 
+      <main className="px-8 py-6 flex flex-col gap-2.5">
         {error && (
-          <div className="flex items-center gap-2 bg-red-950 border border-red-700 text-red-200 rounded px-3 py-2 text-sm">
+          <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-danger-critical" style={{ backgroundColor: 'color-mix(in oklch, var(--color-danger-critical) 10%, var(--color-surface))' }}>
             <AlertTriangle className="w-4 h-4 shrink-0" />
             {error}
           </div>
         )}
 
-        {patterns.length > 0 && (
-          <div className="space-y-2">
-            {patterns.map((p) => (
-              <div
-                key={p.id}
-                className={`flex items-start gap-2 border rounded px-3 py-2 text-sm ${SEVERITY_STYLES[p.severite]}`}
-              >
-                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                <div>
-                  <span className="font-semibold uppercase text-xs mr-2">{p.severite}</span>
-                  {p.description}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {patterns.map((p) => (
+          <PatternBanner key={p.id} pattern={p} />
+        ))}
 
-        {reportMarkdown && (
-          <div className="border border-neutral-700 rounded p-4 space-y-2 bg-neutral-900">
-            <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Rapport de conformité</h2>
-              <button
-                onClick={() => downloadText(reportMarkdown, 'racine_rapport_conformite.md', 'text/markdown;charset=utf-8')}
-                className="inline-flex items-center gap-1 text-sm text-emerald-400 hover:text-emerald-300"
-              >
-                <Download className="w-4 h-4" /> Télécharger
-              </button>
-            </div>
-            <pre className="text-xs whitespace-pre-wrap text-neutral-300 max-h-96 overflow-auto">
-              {reportMarkdown}
-            </pre>
-          </div>
-        )}
-
-        <div className="border border-neutral-800 rounded overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-neutral-900 text-neutral-400">
-              <tr>
-                <th className="text-left px-3 py-2 font-medium">Réclamation</th>
-                <th className="text-left px-3 py-2 font-medium">Catégorie causale</th>
-                <th className="text-left px-3 py-2 font-medium">Statut</th>
-                <th className="text-left px-3 py-2 font-medium">Délai (j)</th>
-                <th className="text-left px-3 py-2 font-medium">Provider</th>
+        {/* ===== Table ===== */}
+        <div className="mt-3 border border-line-soft rounded-[10px] overflow-hidden overflow-x-auto">
+          <table className="w-full text-[13px] border-collapse">
+            <thead>
+              <tr className="bg-elevated">
+                <th className="text-left px-4 py-2.5 font-semibold text-[11px] tracking-wide uppercase text-ink-faint">Réclamation</th>
+                <th className="text-left px-4 py-2.5 font-semibold text-[11px] tracking-wide uppercase text-ink-faint w-56">Catégorie causale</th>
+                <th className="text-left px-4 py-2.5 font-semibold text-[11px] tracking-wide uppercase text-ink-faint w-28">Statut</th>
+                <th className="text-left px-4 py-2.5 font-semibold text-[11px] tracking-wide uppercase text-ink-faint w-20">Délai</th>
+                <th className="text-left px-4 py-2.5 font-semibold text-[11px] tracking-wide uppercase text-ink-faint w-28">Confiance</th>
               </tr>
             </thead>
             <tbody>
               {tickets.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-8 text-center text-neutral-500">
-                    Aucun ticket chargé — clique sur "Charger l'échantillon".
+                  <td colSpan={5} className="px-4 py-10 text-center text-ink-faint text-sm">
+                    Aucun ticket chargé — clique sur « Charger l'échantillon ».
                   </td>
                 </tr>
               )}
               {tickets.map((t) => (
-                <tr key={t.id} className="border-t border-neutral-800">
-                  <td className="px-3 py-2 max-w-md truncate" title={t.texte_brut}>
+                <tr key={t.id} className="border-t border-line-soft">
+                  <td className="px-4 py-3 max-w-md truncate text-ink-soft" title={t.texte_brut}>
                     {t.texte_brut}
                   </td>
-                  <td className="px-3 py-2">
+                  <td className="px-4 py-3">
                     {t.categorie_causale ? (
-                      <span className={`px-2 py-0.5 rounded text-xs ${categoryColor(t.categorie_causale, categories)}`}>
+                      <span className="inline-block px-2.5 py-1 rounded-full text-[11.5px] font-medium" style={categoryTagStyle(t.categorie_causale)}>
                         {t.categorie_causale}
                       </span>
                     ) : (
-                      <span className="text-neutral-600 text-xs">à classer</span>
+                      <span className="text-ink-faint text-xs">à classer</span>
                     )}
                   </td>
-                  <td className="px-3 py-2 text-neutral-400">{t.statut}</td>
-                  <td className="px-3 py-2 text-neutral-400">{t.delai_reponse_jours ?? '—'}</td>
-                  <td className="px-3 py-2 text-neutral-500 text-xs">{t.provider_utilise ?? '—'}</td>
+                  <td className="px-4 py-3">
+                    <span className="inline-flex items-center gap-1.5 text-ink-soft text-[12.5px]">
+                      <span
+                        className="w-1.5 h-1.5 rounded-full"
+                        style={{ backgroundColor: t.statut === 'en_retard' ? 'var(--color-danger-critical)' : t.statut === 'en_cours' ? 'var(--color-warning)' : 'var(--color-ink-soft)' }}
+                      />
+                      {t.statut}
+                    </span>
+                  </td>
+                  <td className="px-4 py-3 font-mono text-[12.5px]" style={{ color: (t.delai_reponse_jours ?? 0) > 45 ? 'var(--color-danger-high)' : 'var(--color-ink-faint)' }}>
+                    {t.delai_reponse_jours ?? '—'}
+                  </td>
+                  <td className="px-4 py-3">
+                    {t.confiance != null ? (
+                      <div className="flex items-center gap-1.5">
+                        <div className="w-10 h-1 rounded-full bg-line">
+                          <div className="h-full rounded-full bg-accent" style={{ width: `${Math.round(t.confiance * 100)}%` }} />
+                        </div>
+                        <span className="font-mono text-[11px] text-ink-faint">{Math.round(t.confiance * 100)}%</span>
+                      </div>
+                    ) : (
+                      <span className="text-ink-faint text-xs">—</span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+
+        {reportMarkdown && (
+          <div className="border border-line-soft rounded-[10px] p-4 mt-3 bg-surface">
+            <div className="flex items-center justify-between mb-2">
+              <h2 className="font-semibold text-sm">Rapport de conformité</h2>
+              <button
+                onClick={() => downloadText(reportMarkdown, 'racine_rapport_conformite.md', 'text/markdown;charset=utf-8')}
+                className="inline-flex items-center gap-1.5 text-[13px] font-medium"
+                style={{ color: 'var(--color-success)' }}
+              >
+                <Download className="w-3.5 h-3.5" /> Télécharger
+              </button>
+            </div>
+            <pre className="text-xs whitespace-pre-wrap text-ink-soft max-h-96 overflow-auto font-mono">{reportMarkdown}</pre>
+          </div>
+        )}
       </main>
     </div>
   );
