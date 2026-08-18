@@ -1,0 +1,37 @@
+{
+  "name": "racine",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Moteur de triage causal de réclamations bancaires pour la zone CEMAC — détection de patterns d'incidents et rapports de conformité COBAC.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"tsx server/index.ts\"",
+    "dev:client": "vite",
+    "dev:server": "tsx server/index.ts",
+    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.0",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/papaparse": "^5.5.2",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^10.0.3",
+    "tailwindcss": "^4.3.0",
+    "tsx": "^4.22.4",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "lucide-react": "^1.17.0",
+    "papaparse": "^5.5.3",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}
