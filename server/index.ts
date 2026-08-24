@@ -12,7 +12,8 @@ import {
 } from '../src/lib/ticketClassifier.ts';
 import { detectPatterns } from '../src/lib/patternDetection.ts';
 import { buildComplianceReport, complianceReportToMarkdown } from '../src/lib/complianceReport.ts';
-import type { Ticket } from '../src/lib/types.ts';
+import type { DetectedPattern, Ticket } from '../src/lib/types.ts';
+import { supabase, hasSupabase } from './db.ts';
 
 const app = express();
 const PORT = Number(process.env.API_PORT ?? process.env.PORT) || 3001;
@@ -47,6 +48,7 @@ app.get('/api/health', (_req, res) => {
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
     hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY),
     hasOpenaiKey: Boolean(process.env.OPENAI_API_KEY),
+    hasSupabase,
   });
 });
 
@@ -327,16 +329,98 @@ app.post('/api/classify-ticket', async (req, res) => {
   }
 });
 
-app.post('/api/patterns', (req, res) => {
-  const { tickets } = req.body as { tickets?: Ticket[] };
+// Persistance Supabase (optionnelle) : si SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY ne sont
+// pas configurées, ces routes répondent 501 et le frontend continue de fonctionner en
+// mémoire — pas de régression pour qui n'a pas encore de projet Supabase.
+app.get('/api/tickets', async (_req, res) => {
+  if (!supabase) {
+    res.status(501).json({ error: 'Supabase not configured' });
+    return;
+  }
+  const { data, error } = await supabase
+    .from('tickets')
+    .select('*')
+    .order('date_creation', { ascending: false });
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ tickets: data as Ticket[] });
+});
 
+app.post('/api/tickets', async (req, res) => {
+  const { tickets } = req.body as { tickets?: Ticket[] };
   if (!Array.isArray(tickets)) {
     res.status(400).json({ error: 'tickets array is required' });
     return;
   }
+  if (!supabase) {
+    res.status(501).json({ error: 'Supabase not configured' });
+    return;
+  }
 
-  const patterns = detectPatterns(tickets);
+  const { data, error } = await supabase.from('tickets').upsert(tickets, { onConflict: 'id' }).select();
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ tickets: data as Ticket[] });
+});
+
+app.post('/api/patterns', async (req, res) => {
+  const { tickets, persistedOnly } = req.body as { tickets?: Ticket[]; persistedOnly?: boolean };
+
+  if (!Array.isArray(tickets) && !persistedOnly) {
+    res.status(400).json({ error: 'tickets array is required' });
+    return;
+  }
+
+  // Détection "dans le temps" : si Supabase est configuré, on fusionne le lot envoyé avec
+  // tout l'historique persisté pour repérer des patterns à travers l'ensemble des tickets,
+  // pas seulement le lot en cours de classification.
+  let dataset: Ticket[] = tickets ?? [];
+  if (supabase) {
+    const { data, error } = await supabase.from('tickets').select('*');
+    if (!error && data) {
+      const byId = new Map<string, Ticket>();
+      for (const t of data as Ticket[]) byId.set(t.id, t);
+      for (const t of dataset) byId.set(t.id, t);
+      dataset = Array.from(byId.values());
+    }
+  }
+
+  const patterns = detectPatterns(dataset);
+
+  if (supabase && patterns.length > 0) {
+    const rows = patterns.map((p) => ({
+      id: p.id,
+      description: p.description,
+      categorie_causale: p.categorie_causale,
+      tickets_lies: p.tickets_lies,
+      date_detection: p.date_detection,
+      severite: p.severite,
+      type: p.type,
+    }));
+    await supabase.from('patterns_detectes').upsert(rows, { onConflict: 'id' });
+  }
+
   res.json({ patterns });
+});
+
+app.get('/api/patterns', async (_req, res) => {
+  if (!supabase) {
+    res.status(501).json({ error: 'Supabase not configured' });
+    return;
+  }
+  const { data, error } = await supabase
+    .from('patterns_detectes')
+    .select('*')
+    .order('date_detection', { ascending: false });
+  if (error) {
+    res.status(500).json({ error: error.message });
+    return;
+  }
+  res.json({ patterns: data as DetectedPattern[] });
 });
 
 app.post('/api/generate-report', (req, res) => {

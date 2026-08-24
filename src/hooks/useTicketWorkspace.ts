@@ -100,6 +100,14 @@ export function useTicketWorkspace() {
 
       setTickets(classified);
 
+      // Persistance Supabase best-effort : si non configuré côté serveur, l'API répond 501
+      // et on l'ignore silencieusement — l'appli reste utilisable 100% en mémoire.
+      fetch('/api/tickets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tickets: classified }),
+      }).catch(() => {});
+
       const patternsRes = await fetch('/api/patterns', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
