@@ -12,11 +12,34 @@ et étendu, éditeur de nœuds / wizard / exécution Python retirés.
 
 ## Statut
 
-Base mécanique en place (étape 2.1/2.2 du plan) : structure du projet, dépendances
-allégées, moteur de routage IA (`server/index.ts`) étendu avec un provider `selfhosted`
-(Ollama, API compatible OpenAI). L'interface (liste de tickets, bandeau de patterns,
-génération de rapport) et les routes `/api/classify-ticket`, `/api/patterns`,
-`/api/generate-report` restent à construire une fois le schéma Supabase exécuté.
+Fonctionnel de bout en bout : import de fichiers, classification IA, détection de patterns,
+rapport de conformité, persistance Supabase et comptes multi-établissements.
+
+| Brique | État |
+|---|---|
+| Import CSV / Excel (.xlsx) / JSON avec correspondance de colonnes | fait |
+| Classification causale par IA (Gemini, ou Ollama auto-hébergé) | fait |
+| Regroupement par catégorie en onglets | fait |
+| Détection de patterns + rapport COBAC R-2020/06 | fait |
+| Persistance Supabase (`tickets`, `patterns_detectes`) | fait |
+| Comptes, OAuth, organisations, invitations | code fait — [configuration à faire](AUTH.md) |
+| Déploiement public | [étapes dans DEPLOY.md](DEPLOY.md) |
+
+L'application démarre en **mode démo sans comptes** tant que `SUPABASE_ANON_KEY` n'est pas
+renseignée : plan de travail direct, données en mémoire. Renseigner cette clé active l'écran
+de connexion et le cloisonnement par organisation — voir [AUTH.md](AUTH.md).
+
+## Import de réclamations
+
+Le bouton « Importer un fichier » accepte le CSV (séparateur détecté automatiquement, donc
+les exports Excel francophones en point-virgule passent), le `.xlsx` (multi-feuilles) et le
+JSON. Comme aucun export de banque ne nomme ses colonnes `texte_brut`, une étape de
+correspondance montre les colonnes détectées, devine l'association à partir des en-têtes
+(français, anglais, jargon bancaire) et laisse corriger avant import. Le fichier est lu dans
+le navigateur : il n'est jamais téléversé.
+
+Le `.xls` d'Excel 97-2003 n'est pas pris en charge — le message d'erreur invite à
+réenregistrer en `.xlsx`.
 
 ## Deux modes IA, même code métier
 

@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react';
+import { apiFetch } from '@/lib/apiClient';
 import type { DetectedPattern, Ticket } from '@/lib/types';
 
 export type AIProviderChoice = 'gemini' | 'selfhosted';
@@ -39,6 +40,7 @@ export function useTicketWorkspace() {
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [sourceName, setSourceName] = useState<string | null>(null);
 
   const loadSampleTickets = useCallback(async () => {
     setIsLoading(true);
@@ -64,11 +66,21 @@ export function useTicketWorkspace() {
       setTickets(loaded);
       setPatterns([]);
       setReportMarkdown(null);
+      setSourceName('Échantillon de démonstration');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Échec du chargement');
     } finally {
       setIsLoading(false);
     }
+  }, []);
+
+  /** Remplace le portefeuille courant par un fichier importé (CSV / Excel / JSON). */
+  const importTickets = useCallback((imported: WorkingTicket[], fileName: string) => {
+    setTickets(imported);
+    setPatterns([]);
+    setReportMarkdown(null);
+    setError(null);
+    setSourceName(fileName);
   }, []);
 
   const classifyAll = useCallback(async () => {
@@ -82,9 +94,8 @@ export function useTicketWorkspace() {
         tickets,
         4,
         async (ticket) => {
-          const res = await fetch('/api/classify-ticket', {
+          const res = await apiFetch('/api/classify-ticket', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ texte_brut: ticket.texte_brut, provider }),
           });
           const data = (await res.json()) as {
@@ -100,17 +111,26 @@ export function useTicketWorkspace() {
 
       setTickets(classified);
 
-      // Persistance Supabase best-effort : si non configuré côté serveur, l'API répond 501
-      // et on l'ignore silencieusement — l'appli reste utilisable 100% en mémoire.
-      fetch('/api/tickets', {
+      // Persistance Supabase : awaitée avant la détection de patterns, qui relit l'historique
+      // persisté côté serveur pour croiser les lots — sans await, le lot courant pouvait
+      // manquer à l'appel. Si Supabase n'est pas configuré, l'API répond 501 : cas normal,
+      // l'appli reste utilisable 100% en mémoire. Tout autre échec est signalé plutôt
+      // qu'avalé (la classification, elle, reste affichée).
+      const persistRes = await apiFetch('/api/tickets', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickets: classified }),
-      }).catch(() => {});
+      }).catch(() => null);
 
-      const patternsRes = await fetch('/api/patterns', {
+      if (persistRes && !persistRes.ok && persistRes.status !== 501) {
+        const detail = await persistRes
+          .json()
+          .then((body: { error?: string }) => body.error)
+          .catch(() => null);
+        setError(`Classification terminée, mais la persistance a échoué : ${detail ?? `HTTP ${persistRes.status}`}`);
+      }
+
+      const patternsRes = await apiFetch('/api/patterns', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickets: classified }),
       });
       const { patterns: detected } = (await patternsRes.json()) as { patterns: DetectedPattern[] };
@@ -126,9 +146,8 @@ export function useTicketWorkspace() {
     setIsGeneratingReport(true);
     setError(null);
     try {
-      const res = await fetch('/api/generate-report', {
+      const res = await apiFetch('/api/generate-report', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tickets, patterns }),
       });
       const { markdown } = (await res.json()) as { markdown: string };
@@ -159,7 +178,9 @@ export function useTicketWorkspace() {
     reportMarkdown,
     error,
     accuracy,
+    sourceName,
     loadSampleTickets,
+    importTickets,
     classifyAll,
     generateReport,
   };

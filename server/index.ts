@@ -1,4 +1,4 @@
-import express from 'express';
+import express, { type Request } from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import path from 'node:path';
@@ -12,8 +12,9 @@ import {
 } from '../src/lib/ticketClassifier.ts';
 import { detectPatterns } from '../src/lib/patternDetection.ts';
 import { buildComplianceReport, complianceReportToMarkdown } from '../src/lib/complianceReport.ts';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import type { DetectedPattern, Ticket } from '../src/lib/types.ts';
-import { supabase, hasSupabase } from './db.ts';
+import { clientForAccessToken, hasSupabase, hasSupabaseAuth, supabase } from './db.ts';
 
 const app = express();
 const PORT = Number(process.env.API_PORT ?? process.env.PORT) || 3001;
@@ -23,10 +24,15 @@ const AI_PROVIDER = process.env.AI_PROVIDER ?? 'auto';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL ?? 'claude-3-5-haiku-latest';
 const OPENAI_MODEL = process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
+// Échelle de repli, du moins cher au plus capable. Uniquement des modèles `flash` /
+// `flash-lite` : ce sont les seuls éligibles au palier gratuit de l'API Gemini. Les modèles
+// `pro` sont volontairement absents — leur quota gratuit est à 0, ils exigent un compte de
+// facturation, donc les inclure exposerait à des frais. Versions épinglées plutôt que des
+// alias `-latest`, qui peuvent basculer vers un modèle payant sans prévenir.
 const GEMINI_MODELS = (
   process.env.GEMINI_MODEL
     ? [process.env.GEMINI_MODEL]
-    : ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash']
+    : ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash']
 ) as string[];
 
 // Self-hosted (Ollama, OpenAI-compatible /v1/chat/completions) — souveraineté des données.
@@ -137,7 +143,7 @@ export async function generateAIText(
         }
       }
       throw new Error(
-        `Gemini quota exceeded on all models. Wait a few minutes or add ANTHROPIC_API_KEY / OPENAI_API_KEY. Last: ${lastError.slice(0, 160)}`,
+        `Aucun modèle Gemini disponible (quota 429, ou modèle retiré 404 — vérifier GEMINI_MODELS). Attendre quelques minutes, ou ajouter ANTHROPIC_API_KEY / OPENAI_API_KEY. Dernière erreur : ${lastError.slice(0, 160)}`,
       );
     };
 
@@ -329,15 +335,101 @@ app.post('/api/classify-ticket', async (req, res) => {
   }
 });
 
-// Persistance Supabase (optionnelle) : si SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY ne sont
-// pas configurées, ces routes répondent 501 et le frontend continue de fonctionner en
-// mémoire — pas de régression pour qui n'a pas encore de projet Supabase.
-app.get('/api/tickets', async (_req, res) => {
-  if (!supabase) {
-    res.status(501).json({ error: 'Supabase not configured' });
+// ---------------------------------------------------------------- persistance Supabase
+//
+// Trois régimes, du plus protégé au plus permissif :
+//   1. jeton porté par la requête  → client sous RLS, données cloisonnées par organisation ;
+//   2. authentification configurée mais aucun jeton → 401, on ne sert rien ;
+//   3. authentification non configurée (pas de clé anonyme) → service_role sans organisation,
+//      c'est le mode démo local d'avant l'ajout des comptes.
+// Sans Supabase du tout, les routes répondent 501 et le frontend continue en mémoire.
+
+type Workspace =
+  | { ok: true; db: SupabaseClient; organisationId: string | null }
+  | { ok: false; status: number; message: string };
+
+async function resolveWorkspace(req: Request): Promise<Workspace> {
+  const header = req.header('authorization') ?? '';
+  const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+
+  if (!token) {
+    if (hasSupabaseAuth) {
+      return { ok: false, status: 401, message: 'Authentification requise' };
+    }
+    if (!supabase) return { ok: false, status: 501, message: 'Supabase not configured' };
+    return { ok: true, db: supabase, organisationId: null };
+  }
+
+  const db = clientForAccessToken(token);
+  if (!db) return { ok: false, status: 501, message: 'Supabase not configured' };
+
+  const { data: userData, error: userError } = await db.auth.getUser(token);
+  if (userError || !userData.user) {
+    return { ok: false, status: 401, message: 'Session invalide ou expirée' };
+  }
+
+  // La RLS filtre déjà `membres` sur auth.uid() — on lit simplement la première organisation
+  // du compte. Sans organisation, l'utilisateur n'a pas terminé son onboarding.
+  const { data: membre, error: membreError } = await db
+    .from('membres')
+    .select('organisation_id')
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (membreError) {
+    // PGRST205 = table absente du cache de schéma : la migration 002 n'a pas été exécutée.
+    // Sans ce message, l'opérateur reçoit une erreur PostgREST brute qui ne dit pas quoi faire.
+    if (membreError.code === 'PGRST205') {
+      return {
+        ok: false,
+        status: 503,
+        message:
+          "Schéma incomplet : exécute supabase/002_organisations.sql dans Supabase (SQL Editor). Voir AUTH.md.",
+      };
+    }
+    return { ok: false, status: 500, message: membreError.message };
+  }
+  if (!membre) return { ok: false, status: 403, message: "Aucune organisation rattachée à ce compte" };
+
+  return { ok: true, db, organisationId: membre.organisation_id as string };
+}
+
+// PostgREST rejette tout objet contenant un champ absent du schéma. Le front travaille sur
+// des tickets enrichis (categorie_attendue issue du CSV, provider/model/source renvoyés par
+// /api/classify-ticket), donc on ne persiste que les colonnes de la table plutôt que de
+// faire confiance à la forme envoyée par le client.
+const TICKET_COLUMNS = [
+  'id',
+  'texte_brut',
+  'categorie_causale',
+  'sous_categorie',
+  'date_creation',
+  'statut',
+  'provider_utilise',
+  'delai_reponse_jours',
+  'confiance',
+  'justification',
+] as const;
+
+function toTicketRow(ticket: Ticket, organisationId: string | null): Record<string, unknown> {
+  const row: Record<string, unknown> = {};
+  for (const column of TICKET_COLUMNS) {
+    const value = (ticket as Record<string, unknown>)[column];
+    if (value !== undefined) row[column] = value;
+  }
+  if (organisationId) row.organisation_id = organisationId;
+  return row;
+}
+
+app.get('/api/tickets', async (req, res) => {
+  const ws = await resolveWorkspace(req);
+  if (!ws.ok) {
+    res.status(ws.status).json({ error: ws.message });
     return;
   }
-  const { data, error } = await supabase
+
+  const { data, error } = await ws.db
     .from('tickets')
     .select('*')
     .order('date_creation', { ascending: false });
@@ -354,12 +446,21 @@ app.post('/api/tickets', async (req, res) => {
     res.status(400).json({ error: 'tickets array is required' });
     return;
   }
-  if (!supabase) {
-    res.status(501).json({ error: 'Supabase not configured' });
+
+  const ws = await resolveWorkspace(req);
+  if (!ws.ok) {
+    res.status(ws.status).json({ error: ws.message });
+    return;
+  }
+  if (tickets.length === 0) {
+    res.json({ tickets: [] });
     return;
   }
 
-  const { data, error } = await supabase.from('tickets').upsert(tickets, { onConflict: 'id' }).select();
+  const { data, error } = await ws.db
+    .from('tickets')
+    .upsert(tickets.map((t) => toTicketRow(t, ws.organisationId)), { onConflict: 'id' })
+    .select();
   if (error) {
     res.status(500).json({ error: error.message });
     return;
@@ -375,12 +476,15 @@ app.post('/api/patterns', async (req, res) => {
     return;
   }
 
-  // Détection "dans le temps" : si Supabase est configuré, on fusionne le lot envoyé avec
-  // tout l'historique persisté pour repérer des patterns à travers l'ensemble des tickets,
-  // pas seulement le lot en cours de classification.
+  const ws = await resolveWorkspace(req);
+
+  // La détection de patterns n'exige pas Supabase : sans persistance, on analyse le lot reçu
+  // et on répond quand même, plutôt que de bloquer la fonctionnalité principale.
   let dataset: Ticket[] = tickets ?? [];
-  if (supabase) {
-    const { data, error } = await supabase.from('tickets').select('*');
+  if (ws.ok) {
+    // Détection « dans le temps » : on fusionne le lot envoyé avec l'historique de
+    // l'organisation, pour repérer des patterns au-delà du seul lot en cours.
+    const { data, error } = await ws.db.from('tickets').select('*');
     if (!error && data) {
       const byId = new Map<string, Ticket>();
       for (const t of data as Ticket[]) byId.set(t.id, t);
@@ -391,7 +495,7 @@ app.post('/api/patterns', async (req, res) => {
 
   const patterns = detectPatterns(dataset);
 
-  if (supabase && patterns.length > 0) {
+  if (ws.ok && patterns.length > 0) {
     const rows = patterns.map((p) => ({
       id: p.id,
       description: p.description,
@@ -400,19 +504,25 @@ app.post('/api/patterns', async (req, res) => {
       date_detection: p.date_detection,
       severite: p.severite,
       type: p.type,
+      ...(ws.organisationId ? { organisation_id: ws.organisationId } : {}),
     }));
-    await supabase.from('patterns_detectes').upsert(rows, { onConflict: 'id' });
+    // Clé composite depuis la migration 002 : l'identifiant de pattern est déterministe et
+    // donc partagé entre organisations, seule la paire (organisation, id) est unique.
+    const onConflict = ws.organisationId ? 'organisation_id,id' : 'id';
+    await ws.db.from('patterns_detectes').upsert(rows, { onConflict });
   }
 
   res.json({ patterns });
 });
 
-app.get('/api/patterns', async (_req, res) => {
-  if (!supabase) {
-    res.status(501).json({ error: 'Supabase not configured' });
+app.get('/api/patterns', async (req, res) => {
+  const ws = await resolveWorkspace(req);
+  if (!ws.ok) {
+    res.status(ws.status).json({ error: ws.message });
     return;
   }
-  const { data, error } = await supabase
+
+  const { data, error } = await ws.db
     .from('patterns_detectes')
     .select('*')
     .order('date_detection', { ascending: false });

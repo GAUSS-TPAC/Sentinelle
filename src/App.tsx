@@ -1,9 +1,20 @@
-import { AlertTriangle, Cloud, Download, FileText, Loader2, ShieldCheck, Upload } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import { AlertTriangle, Cloud, Download, FileText, FileUp, Loader2, ShieldCheck, Upload } from 'lucide-react';
+import { AccountMenu } from '@/components/AccountMenu';
+import { AuthScreen } from '@/components/AuthScreen';
+import { ImportDialog } from '@/components/ImportDialog';
+import { OnboardingScreen } from '@/components/OnboardingScreen';
+import { useAuth } from '@/auth/AuthProvider';
 import { SegmentedControl } from '@/components/SegmentedControl';
 import { useTicketWorkspace } from '@/hooks/useTicketWorkspace';
 import { downloadText } from '@/lib/dataExporter';
 import { categoryTagStyle } from '@/lib/categoryColor';
 import type { DetectedPattern } from '@/lib/types';
+
+/** Onglet « toutes catégories » — valeur sentinelle, distincte de toute catégorie réelle. */
+const ALL_TAB = '__toutes__';
+/** Regroupe les tickets encore sans catégorie (avant classification, ou repli en échec). */
+const UNCLASSIFIED_TAB = '__non_classees__';
 
 const SEVERITY_LABEL: Record<DetectedPattern['severite'], string> = {
   critique: 'Critique',
@@ -57,7 +68,37 @@ function PatternBanner({ pattern }: { pattern: DetectedPattern }) {
   );
 }
 
-export default function App() {
+function TabButton({
+  label, count, active, dotColor, onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  dotColor?: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg border text-[12.5px] font-medium whitespace-nowrap transition-colors"
+      style={{
+        borderColor: active ? 'var(--color-accent)' : 'var(--color-line-soft)',
+        backgroundColor: active
+          ? 'color-mix(in oklch, var(--color-accent) 14%, var(--color-surface))'
+          : 'var(--color-surface)',
+        color: active ? 'var(--color-ink)' : 'var(--color-ink-soft)',
+      }}
+    >
+      {dotColor && <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ backgroundColor: dotColor }} />}
+      {label}
+      <span className="font-mono text-[11px] text-ink-faint">{count}</span>
+    </button>
+  );
+}
+
+function Workspace() {
   const {
     tickets,
     patterns,
@@ -70,12 +111,41 @@ export default function App() {
     reportMarkdown,
     error,
     accuracy,
+    sourceName,
     loadSampleTickets,
+    importTickets,
     classifyAll,
     generateReport,
   } = useTicketWorkspace();
 
+  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<string>(ALL_TAB);
+
   const hasClassified = tickets.some((t) => t.categorie_causale);
+
+  // Un onglet par catégorie effectivement présente, ordonné du plus gros volume au plus
+  // petit : ce sont les catégories les plus lourdes qui intéressent le chargé de conformité.
+  const groups = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const t of tickets) {
+      const key = t.categorie_causale || UNCLASSIFIED_TAB;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return [...counts.entries()]
+      .sort((a, b) => (a[0] === UNCLASSIFIED_TAB ? 1 : b[0] === UNCLASSIFIED_TAB ? -1 : b[1] - a[1]))
+      .map(([categorie, count]) => ({ categorie, count }));
+  }, [tickets]);
+
+  // L'onglet actif peut disparaître après un nouvel import ou une reclassification.
+  const currentTab = activeTab !== ALL_TAB && !groups.some((g) => g.categorie === activeTab)
+    ? ALL_TAB
+    : activeTab;
+
+  const visibleTickets = useMemo(() => {
+    if (currentTab === ALL_TAB) return tickets;
+    if (currentTab === UNCLASSIFIED_TAB) return tickets.filter((t) => !t.categorie_causale);
+    return tickets.filter((t) => t.categorie_causale === currentTab);
+  }, [tickets, currentTab]);
 
   return (
     <div className="min-h-screen bg-base text-ink font-sans">
@@ -96,6 +166,8 @@ export default function App() {
             <span className="w-1.5 h-1.5 rounded-full bg-success shadow-[0_0_0_3px_color-mix(in_oklch,var(--color-success)_22%,transparent)]" />
             <span className="text-[12.5px] text-ink-soft">Service actif</span>
           </div>
+
+          <AccountMenu />
 
           <SegmentedControl
             label="Provider IA"
@@ -139,6 +211,14 @@ export default function App() {
         </button>
 
         <button
+          onClick={() => setIsImportOpen(true)}
+          className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-line bg-surface text-ink text-[13px] font-medium hover:bg-elevated transition-colors"
+        >
+          <FileUp className="w-3.5 h-3.5" />
+          Importer un fichier
+        </button>
+
+        <button
           onClick={classifyAll}
           disabled={tickets.length === 0 || isClassifying}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-[13px] font-semibold disabled:opacity-50 transition-colors"
@@ -157,8 +237,14 @@ export default function App() {
           Générer le rapport de conformité
         </button>
 
+        {sourceName && (
+          <span className="ml-auto font-mono text-[11.5px] text-ink-faint truncate max-w-[16rem]" title={sourceName}>
+            {sourceName} · {tickets.length} réclamation(s)
+          </span>
+        )}
+
         {accuracy && (
-          <div className="ml-auto flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface border border-line-soft">
+          <div className={`${sourceName ? '' : 'ml-auto'} flex items-center gap-2 px-3.5 py-2 rounded-lg bg-surface border border-line-soft`}>
             <span className="font-mono text-xs text-ink-soft">Précision vs. référence</span>
             <span className="font-mono text-xs font-semibold text-success">
               {accuracy.correct}/{accuracy.total} · {(accuracy.ratio * 100).toFixed(0)}%
@@ -179,6 +265,28 @@ export default function App() {
           <PatternBanner key={p.id} pattern={p} />
         ))}
 
+        {/* ===== Onglets par catégorie causale ===== */}
+        {groups.length > 1 && (
+          <div className="mt-3 flex items-center gap-1.5 overflow-x-auto pb-1" role="tablist" aria-label="Catégories causales">
+            <TabButton
+              label="Toutes"
+              count={tickets.length}
+              active={currentTab === ALL_TAB}
+              onClick={() => setActiveTab(ALL_TAB)}
+            />
+            {groups.map(({ categorie, count }) => (
+              <TabButton
+                key={categorie}
+                label={categorie === UNCLASSIFIED_TAB ? 'Non classées' : categorie}
+                count={count}
+                active={currentTab === categorie}
+                dotColor={categorie === UNCLASSIFIED_TAB ? undefined : categoryTagStyle(categorie).color}
+                onClick={() => setActiveTab(categorie)}
+              />
+            ))}
+          </div>
+        )}
+
         {/* ===== Table ===== */}
         <div className="mt-3 border border-line-soft rounded-[10px] overflow-hidden overflow-x-auto">
           <table className="w-full text-[13px] border-collapse">
@@ -192,14 +300,16 @@ export default function App() {
               </tr>
             </thead>
             <tbody>
-              {tickets.length === 0 && (
+              {visibleTickets.length === 0 && (
                 <tr>
                   <td colSpan={5} className="px-4 py-10 text-center text-ink-faint text-sm">
-                    Aucun ticket chargé — clique sur « Charger l'échantillon ».
+                    {tickets.length === 0
+                      ? 'Aucune réclamation chargée — importe un fichier, ou charge l’échantillon.'
+                      : 'Aucune réclamation dans cette catégorie.'}
                   </td>
                 </tr>
               )}
-              {tickets.map((t) => (
+              {visibleTickets.map((t) => (
                 <tr key={t.id} className="border-t border-line-soft">
                   <td className="px-4 py-3 max-w-md truncate text-ink-soft" title={t.texte_brut}>
                     {t.texte_brut}
@@ -259,6 +369,38 @@ export default function App() {
           </div>
         )}
       </main>
+
+      <ImportDialog
+        open={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+        onImport={(imported, fileName) => {
+          importTickets(imported, fileName);
+          setActiveTab(ALL_TAB);
+        }}
+      />
     </div>
   );
+}
+
+/**
+ * Porte d'entree : session puis organisation. Tant que Supabase Auth n'est pas configure
+ * (VITE_SUPABASE_ANON_KEY absente), on sert directement le plan de travail : la demo locale
+ * reste utilisable sans comptes, exactement comme avant l'ajout de cette couche.
+ */
+export default function App() {
+  const { configured, loading, session, organisation } = useAuth();
+
+  if (!configured) return <Workspace />;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-base text-ink flex items-center justify-center">
+        <Loader2 className="w-5 h-5 animate-spin text-ink-faint" />
+      </div>
+    );
+  }
+
+  if (!session) return <AuthScreen />;
+  if (!organisation) return <OnboardingScreen />;
+  return <Workspace />;
 }
