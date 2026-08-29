@@ -560,6 +560,6 @@ if (existsSync(DIST_DIR)) {
 
 app.listen(PORT, () => {
   console.log(
-    `Racine API server on http://localhost:${PORT} (AI_PROVIDER=${AI_PROVIDER}, Gemini models: ${GEMINI_MODELS.join(', ')}, self-hosted: ${SELF_HOSTED_BASE_URL} [${SELF_HOSTED_MODEL}])`,
+    `Sentinelle API server on http://localhost:${PORT} (AI_PROVIDER=${AI_PROVIDER}, Gemini models: ${GEMINI_MODELS.join(', ')}, self-hosted: ${SELF_HOSTED_BASE_URL} [${SELF_HOSTED_MODEL}])`,
   );
 });

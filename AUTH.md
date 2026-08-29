@@ -1,6 +1,6 @@
 # Comptes, organisations et connexion
 
-Racine passe d'une démo sans compte à une application multi-établissements : chaque compte
+Sentinelle passe d'une démo sans compte à une application multi-établissements : chaque compte
 appartient à une **organisation** (une banque), et les réclamations, patterns et rapports
 appartiennent à l'organisation — pas à l'individu. Deux employés de la même banque partagent
 le même portefeuille ; une autre banque ne voit rien.

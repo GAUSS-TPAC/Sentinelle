@@ -1,5 +1,5 @@
 type SentinelleLogoProps = {
-  /** Taille en pixels (largeur et hauteur calculées via l'aspect ratio) */
+  /** Côté du carré, en pixels */
   size?: number;
   /** Couleur du trait — par défaut hérite de la couleur du texte parent (currentColor) */
   className?: string;
@@ -7,6 +7,11 @@ type SentinelleLogoProps = {
 
 /**
  * Marque Sentinelle — double S anguleux incliné à 30°.
+ *
+ * La viewBox est recadrée sur le dessin lui-même (256×256 autour du centre de rotation)
+ * plutôt que sur le 680×400 d'origine : dans ce cadre-là, le tracé n'occupait qu'un tiers
+ * de la largeur, et la marque apparaissait minuscule à taille de logo. Le rendu est donc
+ * carré, `size` étant le côté.
  * Utilise `currentColor`, donc la couleur suit le `text-*` Tailwind du parent
  * (ex: <SentinelleLogo className="text-slate-900 dark:text-white" />).
  */
@@ -14,9 +19,9 @@ export function SentinelleLogo({ size = 40, className = '' }: SentinelleLogoProp
   return (
     <svg
       xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 680 400"
+      viewBox="212 72 256 256"
       width={size}
-      height={(size * 400) / 680}
+      height={size}
       role="img"
       aria-label="Sentinelle"
       className={className}

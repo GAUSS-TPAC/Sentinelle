@@ -1,4 +1,4 @@
--- Racine — couche comptes / organisations (à exécuter APRÈS schema.sql).
+-- Sentinelle — couche comptes / organisations (à exécuter APRÈS schema.sql).
 -- Supabase → SQL Editor → New query → Run.
 --
 -- Modèle : un compte appartient à une ou plusieurs organisations (une banque). Les

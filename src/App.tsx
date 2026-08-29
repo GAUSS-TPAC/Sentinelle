@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { AlertTriangle, Cloud, Download, FileText, FileUp, Loader2, ShieldCheck, Upload } from 'lucide-react';
 import { AccountMenu } from '@/components/AccountMenu';
+import { SentinelleLogo } from '@/components/SentinelleLogo';
 import { AuthScreen } from '@/components/AuthScreen';
 import { ImportDialog } from '@/components/ImportDialog';
 import { OnboardingScreen } from '@/components/OnboardingScreen';
@@ -29,20 +30,6 @@ const SEVERITY_COLOR: Record<DetectedPattern['severite'], string> = {
   moyenne: 'var(--color-warning)',
   faible: 'var(--color-ink-faint)',
 };
-
-function Logomark() {
-  return (
-    <div className="w-9 h-9 rounded-[9px] bg-elevated border border-line flex items-center justify-center shrink-0">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-        <circle cx="12" cy="7" r="2.4" />
-        <path d="M12 9.4 V13 M12 13 L6.5 19 M12 13 L12 19.5 M12 13 L17.5 19" />
-        <circle cx="6.5" cy="19.6" r="1.3" />
-        <circle cx="12" cy="20.1" r="1.3" />
-        <circle cx="17.5" cy="19.6" r="1.3" />
-      </svg>
-    </div>
-  );
-}
 
 function PatternBanner({ pattern }: { pattern: DetectedPattern }) {
   const color = SEVERITY_COLOR[pattern.severite];
@@ -152,9 +139,9 @@ function Workspace() {
       {/* ===== En-tête ===== */}
       <header className="flex items-center justify-between gap-4 flex-wrap px-8 py-5 border-b border-line-soft bg-surface">
         <div className="flex items-center gap-3.5">
-          <Logomark />
+          <SentinelleLogo size={34} className="text-ink shrink-0" />
           <div>
-            <div className="text-base font-semibold tracking-tight leading-tight">Racine</div>
+            <div className="text-[15.5px] font-semibold tracking-tight leading-tight">Sentinelle</div>
             <div className="font-mono text-[10.5px] tracking-wide uppercase text-ink-faint mt-0.5">
               Triage causal · zone CEMAC
             </div>

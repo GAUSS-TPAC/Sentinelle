@@ -1,4 +1,4 @@
--- Racine — schéma Supabase (triage causal CEMAC)
+-- Sentinelle — schéma Supabase (triage causal CEMAC)
 -- À exécuter dans Supabase → SQL Editor → New query → Run.
 -- Basé sur src/lib/types.ts (Ticket, DetectedPattern) et src/lib/taxonomy.ts.
 

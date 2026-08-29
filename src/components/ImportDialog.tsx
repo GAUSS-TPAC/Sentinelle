@@ -77,9 +77,11 @@ export function ImportDialog({ open, onClose, onImport }: ImportDialogProps) {
   const canImport = Boolean(mapping?.texte_brut) && (preview?.tickets.length ?? 0) > 0;
 
   return (
+    // Voile assis sur l'encre, pas sur le fond : sur un thème clair, un voile clair ne
+    // détacherait pas le dialogue de la page derrière lui.
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-6"
-      style={{ backgroundColor: 'color-mix(in oklch, var(--color-base) 82%, transparent)' }}
+      style={{ backgroundColor: 'color-mix(in oklch, var(--color-ink) 45%, transparent)' }}
       onClick={close}
     >
       <div

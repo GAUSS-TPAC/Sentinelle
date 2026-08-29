@@ -12,8 +12,11 @@ function hueFor(categorie: string): number {
 
 export function categoryTagStyle(categorie: string): { backgroundColor: string; color: string } {
   const hue = hueFor(categorie);
+  // Fond très clair teinté, encre saturée : l'inverse de la version sur fond sombre. La
+  // luminosité de l’encre (38 %) tient le contraste sur le fond (94 %) pour les dix teintes :
+  // vérifié, ratio minimum 7,53 (teinte 190), donc AAA sur l’ensemble de la palette.
   return {
-    backgroundColor: `oklch(28% 0.06 ${hue})`,
-    color: `oklch(85% 0.05 ${hue})`,
+    backgroundColor: `oklch(94% 0.045 ${hue})`,
+    color: `oklch(38% 0.115 ${hue})`,
   };
 }

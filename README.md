@@ -1,4 +1,4 @@
-# Racine
+# Sentinelle
 
 Moteur de triage causal de réclamations bancaires pour la zone CEMAC. Un ticket de
 réclamation (texte libre, français informel, mobile money) entre dans le système, une IA
@@ -40,6 +40,20 @@ le navigateur : il n'est jamais téléversé.
 
 Le `.xls` d'Excel 97-2003 n'est pas pris en charge — le message d'erreur invite à
 réenregistrer en `.xlsx`.
+
+## Identité visuelle
+
+Marque : double S anguleux incliné à 30°, rendu par `src/components/SentinelleLogo.tsx`.
+Le composant trace en `currentColor`, donc il prend la couleur du texte parent et suit
+n'importe quel thème sans variante de fichier. Le favicon (`public/favicon.svg`) reprend la
+même géométrie et bascule de teinte selon `prefers-color-scheme`, pour rester lisible sur un
+onglet clair comme sombre.
+
+Palette « Institutional Slate », variante claire : fond papier, cartes blanches, encre
+ardoise. Les valeurs ne sont pas choisies à l'œil — chaque paire texte/fond a été vérifiée au
+ratio de contraste WCAG, plancher à 5,08 (les en-têtes de table, en 11 px, sont le cas le
+plus serré). Les dix teintes de tags causals sont à 7,53 minimum. Tout est piloté par les
+tokens de `src/index.css` : changer de thème, c'est réécrire ces valeurs, pas les composants.
 
 ## Deux modes IA, même code métier
 

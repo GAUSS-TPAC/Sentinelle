@@ -2,7 +2,7 @@ import type { DetectedPattern, Ticket } from './types';
 import { COBAC_DEADLINE_DAYS } from './taxonomy';
 
 export type ComplianceReport = {
-  reportType: 'Racine — Rapport de conformité COBAC R-2020/06';
+  reportType: 'Sentinelle — Rapport de conformité COBAC R-2020/06';
   version: '1.0';
   generatedAt: string;
   periode: { debut: string | null; fin: string | null };
@@ -34,7 +34,7 @@ export function buildComplianceReport(tickets: Ticket[], patterns: DetectedPatte
   const tauxConformiteDelai = tickets.length > 0 ? 1 - ticketsEnRetard / tickets.length : 1;
 
   return {
-    reportType: 'Racine — Rapport de conformité COBAC R-2020/06',
+    reportType: 'Sentinelle — Rapport de conformité COBAC R-2020/06',
     version: '1.0',
     generatedAt: new Date().toISOString(),
     periode: extentDates(tickets),

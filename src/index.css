@@ -2,31 +2,37 @@
 @import "tailwindcss";
 
 /*
- * Palette "Institutional Slate" — validée sur le canevas de design
- * (direction "banking trust", froide et précise, zone CEMAC).
- * Tokens exposés comme couleurs Tailwind v4 (@theme) : bg-accent, text-tertiary,
- * border-line, etc. Les teintes de tags causals restent en inline style (10
- * catégories, valeurs calculées) — voir src/lib/categoryColor.ts.
+ * Palette "Institutional Slate" — direction "banking trust", froide et précise (zone CEMAC),
+ * en variante claire : fond papier, cartes blanches, encre ardoise.
+ * Tokens exposés comme couleurs Tailwind v4 (@theme) : bg-accent, border-line, etc. Les
+ * teintes de tags causals sont calculées — voir src/lib/categoryColor.ts.
+ *
+ * Les valeurs ne sont pas choisies à l'œil : chaque paire texte/fond a été vérifiée au
+ * ratio de contraste WCAG. Les plus serrées, parce qu'elles portent du texte de 10 à 12 px :
+ *   ink-faint / elevated (en-têtes de table) ....... 5.08  AA
+ *   ink-faint / surface  (mentions secondaires) .... 5.62  AA
+ *   blanc / accent       (boutons primaires) ....... 5.58  AA
+ * Assombrir `--color-elevated` ou éclaircir `--color-ink-faint` casserait ce plancher.
  */
 @theme {
   --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
 
-  --color-base: oklch(14% 0.010 253);
-  --color-surface: oklch(18% 0.012 253);
-  --color-elevated: oklch(21.5% 0.013 253);
-  --color-line: oklch(30% 0.015 253);
-  --color-line-soft: oklch(24% 0.013 253);
-  --color-ink: oklch(96% 0.003 253);
-  --color-ink-soft: oklch(72% 0.010 253);
-  --color-ink-faint: oklch(53% 0.010 253);
-  --color-accent: oklch(62% 0.15 255);
-  --color-accent-hover: oklch(68% 0.15 255);
-  --color-accent-ink: oklch(15% 0.010 253);
-  --color-success: oklch(68% 0.14 155);
-  --color-warning: oklch(78% 0.14 85);
-  --color-danger-high: oklch(70% 0.17 45);
-  --color-danger-critical: oklch(62% 0.21 25);
+  --color-base: oklch(98.5% 0.003 253);
+  --color-surface: oklch(100% 0 253);
+  --color-elevated: oklch(96.5% 0.005 253);
+  --color-line: oklch(88% 0.008 253);
+  --color-line-soft: oklch(93% 0.006 253);
+  --color-ink: oklch(24.5% 0.015 253);
+  --color-ink-soft: oklch(45% 0.014 253);
+  --color-ink-faint: oklch(51.5% 0.013 253);
+  --color-accent: oklch(52% 0.16 255);
+  --color-accent-hover: oklch(46% 0.16 255);
+  --color-accent-ink: oklch(100% 0 253);
+  --color-success: oklch(50% 0.13 155);
+  --color-warning: oklch(56% 0.12 75);
+  --color-danger-high: oklch(55% 0.18 40);
+  --color-danger-critical: oklch(50.5% 0.20 25);
 }
 
 html,

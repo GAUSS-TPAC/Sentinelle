@@ -1,5 +1,5 @@
 {
-  "name": "racine",
+  "name": "sentinelle",
   "private": true,
   "version": "0.0.0",
   "description": "Moteur de triage causal de réclamations bancaires pour la zone CEMAC — détection de patterns d'incidents et rapports de conformité COBAC.",

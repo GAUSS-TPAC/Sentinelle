@@ -1,6 +1,6 @@
 // Segmented control accessible (radiogroup ARIA, navigation clavier, curseur animé
 // par ressort) — sourcé sur 21st.dev (ddoemonn/segmented-control) et adapté aux
-// tokens Racine ("Institutional Slate" : --color-accent / --color-elevated / etc.).
+// tokens Sentinelle ("Institutional Slate" : --color-accent / --color-elevated / etc.).
 'use client';
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';

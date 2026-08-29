@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Loader2, Mail } from 'lucide-react';
 import { useAuth } from '@/auth/AuthProvider';
+import { SentinelleLogo } from '@/components/SentinelleLogo';
 
 function GoogleMark() {
   return (
@@ -74,17 +75,9 @@ export function AuthScreen() {
     <div className="min-h-screen bg-base text-ink font-sans flex items-center justify-center px-6 py-12">
       <div className="w-full max-w-sm">
         <div className="flex items-center gap-3 mb-7">
-          <div className="w-9 h-9 rounded-[9px] bg-elevated border border-line flex items-center justify-center shrink-0">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--color-accent)" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="7" r="2.4" />
-              <path d="M12 9.4 V13 M12 13 L6.5 19 M12 13 L12 19.5 M12 13 L17.5 19" />
-              <circle cx="6.5" cy="19.6" r="1.3" />
-              <circle cx="12" cy="20.1" r="1.3" />
-              <circle cx="17.5" cy="19.6" r="1.3" />
-            </svg>
-          </div>
+          <SentinelleLogo size={34} className="text-ink shrink-0" />
           <div>
-            <div className="text-base font-semibold tracking-tight leading-tight">Racine</div>
+            <div className="text-[15.5px] font-semibold tracking-tight leading-tight">Sentinelle</div>
             <div className="font-mono text-[10.5px] tracking-wide uppercase text-ink-faint mt-0.5">
               Triage causal · zone CEMAC
             </div>

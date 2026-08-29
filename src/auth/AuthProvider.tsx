@@ -49,6 +49,8 @@ function frenchify(message: string): string {
     'Password should be at least 6 characters':
       'Le mot de passe doit faire au moins 6 caractères.',
     'Unable to validate email address: invalid format': "Format d'adresse e-mail invalide.",
+    'Could not find the function public.creer_organisation(p_nom, p_pays) in the schema cache':
+      'Schéma incomplet : exécute supabase/003_creation_organisation.sql dans Supabase.',
   };
   return map[message] ?? message;
 }
@@ -173,18 +175,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!supabaseBrowser || !session) return;
     setError(null);
 
-    const { data: org, error: orgError } = await supabaseBrowser
-      .from('organisations')
-      .insert({ nom, pays: pays || null, created_by: session.user.id })
-      .select('id, nom, pays')
+    // Passe par la fonction SQL plutôt que par deux insertions : créer l'organisation puis
+    // s'y rattacher côté client échouait, la lecture de la ligne créée exigeant une
+    // adhésion qui n'existait pas encore (voir supabase/003_creation_organisation.sql).
+    const { data, error: rpcError } = await supabaseBrowser
+      .rpc('creer_organisation', { p_nom: nom, p_pays: pays || null })
       .single();
-    if (orgError) throw new Error(frenchify(orgError.message));
+    if (rpcError) throw new Error(frenchify(rpcError.message));
 
-    const { error: membreError } = await supabaseBrowser
-      .from('membres')
-      .insert({ organisation_id: org.id, user_id: session.user.id, role: 'proprietaire' });
-    if (membreError) throw new Error(frenchify(membreError.message));
-
+    const org = data as { id: string; nom: string; pays: string | null };
     setOrganisation({ ...org, role: 'proprietaire' });
     setInvitations([]);
   }, [session]);

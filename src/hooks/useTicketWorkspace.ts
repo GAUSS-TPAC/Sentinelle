@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '@/lib/apiClient';
 import type { DetectedPattern, Ticket } from '@/lib/types';
 
@@ -81,6 +81,32 @@ export function useTicketWorkspace() {
     setReportMarkdown(null);
     setError(null);
     setSourceName(fileName);
+  }, []);
+
+  /**
+   * Relit le portefeuille déjà persisté de l'organisation, au chargement. Sans cela, les
+   * données survivent en base mais n'apparaissent jamais : un collègue invité rejoindrait
+   * l'organisation pour tomber sur un écran vide. Silencieux en cas d'échec — Supabase non
+   * configuré (501), pas de session (401) ou pas d'organisation (403) sont des états normaux
+   * en mode démo, pas des erreurs à afficher.
+   */
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const res = await apiFetch('/api/tickets');
+        if (!res.ok) return;
+        const { tickets: persisted } = (await res.json()) as { tickets: WorkingTicket[] };
+        if (!active || persisted.length === 0) return;
+        setTickets(persisted);
+        setSourceName('Portefeuille de l’organisation');
+      } catch {
+        // Réseau indisponible : l'appli reste utilisable, on n'affiche rien.
+      }
+    })();
+    return () => {
+      active = false;
+    };
   }, []);
 
   const classifyAll = useCallback(async () => {
