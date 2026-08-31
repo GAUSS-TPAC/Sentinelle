@@ -51,6 +51,7 @@ app.get('/api/health', (_req, res) => {
     openaiModel: OPENAI_MODEL,
     selfHostedBaseUrl: SELF_HOSTED_BASE_URL,
     selfHostedModel: SELF_HOSTED_MODEL,
+    geminiRpm: GEMINI_RPM,
     hasGeminiKey: Boolean(process.env.GEMINI_API_KEY),
     hasAnthropicKey: Boolean(process.env.ANTHROPIC_API_KEY),
     hasOpenaiKey: Boolean(process.env.OPENAI_API_KEY),
@@ -58,15 +59,101 @@ app.get('/api/health', (_req, res) => {
   });
 });
 
-function isRetryableAIError(err: unknown): boolean {
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Deux familles d'erreurs « réessayables », qui appellent des réactions opposées :
+ *
+ *   - `throttle` (429 / RESOURCE_EXHAUSTED) : le quota est momentanément saturé. Il faut
+ *     **attendre**. Réessayer immédiatement ne fait qu'ajouter à la congestion.
+ *   - `gone` (404, `limit: 0`) : le modèle a été retiré, ou n'existe pas au palier gratuit.
+ *     Attendre n'y changera rien, il faut passer au modèle suivant sans délai.
+ *
+ * Les confondre était le défaut d'origine : un simple 429 faisait cycler les quatre modèles
+ * de `GEMINI_MODELS` en quelques millisecondes, épuisait la chaîne, et le ticket repartait
+ * avec un classement par mots-clés sans que rien ne le signale.
+ */
+function aiErrorKind(err: unknown): 'throttle' | 'gone' | 'fatal' {
   const status = (err as { status?: number }).status;
   const message = err instanceof Error ? err.message : String(err);
-  return (
+
+  // `limit: 0` = modèle hors palier gratuit (compte de facturation exigé) : inutile d'attendre.
+  if (status === 404 || /limit:\s*0/.test(message) || /not found|is not supported/i.test(message)) {
+    return 'gone';
+  }
+  if (
     status === 429 ||
-    status === 404 ||
     message.includes('RESOURCE_EXHAUSTED') ||
-    /quota exceeded|rate.?limit|limit:\s*0/i.test(message)
-  );
+    /quota exceeded|rate.?limit/i.test(message)
+  ) {
+    return 'throttle';
+  }
+  return 'fatal';
+}
+
+/** Délai réclamé par le serveur : en-tête `Retry-After`, ou `retryDelay` du corps d'erreur Google. */
+function retryAfterMs(err: unknown): number | null {
+  const header = (err as { retryAfter?: string }).retryAfter;
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds)) return seconds * 1000;
+    const asDate = Date.parse(header);
+    if (!Number.isNaN(asDate)) return Math.max(0, asDate - Date.now());
+  }
+  const message = err instanceof Error ? err.message : String(err);
+  const match = /"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"/.exec(message);
+  return match ? Number(match[1]) * 1000 : null;
+}
+
+// ------------------------------------------------------- limiteur de débit Gemini (palier gratuit)
+//
+// Le palier gratuit plafonne les modèles `flash-lite` autour de 15 requêtes/minute. On vise
+// volontairement plus bas : mieux vaut un lot un peu plus lent qu'une rafale de 429 qui
+// retombe en silence sur le classement par mots-clés.
+//
+// Le compteur est global au processus, pas par requête : il tient donc face à plusieurs
+// onglets, plusieurs utilisateurs ou plusieurs lots simultanés — ce qu'une simple baisse de
+// concurrence côté navigateur ne peut pas garantir.
+const GEMINI_RPM = Number(process.env.GEMINI_RPM) || 10;
+const GEMINI_MAX_RETRIES = Number(process.env.GEMINI_MAX_RETRIES) || 4;
+
+const geminiCallTimestamps: number[] = [];
+let geminiGate: Promise<void> = Promise.resolve();
+
+/**
+ * Réserve un créneau d'appel. Les candidats sont sérialisés (chaîne de promesses) : sans
+ * cela, deux requêtes concurrentes liraient la même fenêtre glissante et passeraient toutes
+ * les deux. Seule l'*admission* est sérialisée — les appels réseau, eux, restent parallèles.
+ */
+async function acquireGeminiSlot(deadline: number): Promise<void> {
+  const previous = geminiGate;
+  let release!: () => void;
+  geminiGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+
+  try {
+    for (;;) {
+      const now = Date.now();
+      while (geminiCallTimestamps.length > 0 && now - geminiCallTimestamps[0] >= 60_000) {
+        geminiCallTimestamps.shift();
+      }
+      if (geminiCallTimestamps.length < GEMINI_RPM) {
+        geminiCallTimestamps.push(now);
+        return;
+      }
+      const waitMs = 60_000 - (now - geminiCallTimestamps[0]) + 50;
+      if (now + waitMs > deadline) {
+        throw new Error(
+          `Quota Gemini saturé : ${GEMINI_RPM} requêtes/minute déjà consommées, prochain créneau dans ${Math.ceil(waitMs / 1000)}s (au-delà du budget de cette requête).`,
+        );
+      }
+      await sleep(waitMs);
+    }
+  } finally {
+    release();
+  }
 }
 
 /**
@@ -82,16 +169,40 @@ export async function generateAIText(
   const geminiKey = process.env.GEMINI_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
+  const isSelfHosted = (forceProvider ?? AI_PROVIDER) === 'selfhosted';
+
+  // Deux garde-fous distincts, là où il n'y en avait qu'un seul.
+  //
+  // `attemptTimeoutMs` borne *un* appel réseau. Ollama en CPU peut prendre du temps à charger
+  // le modèle en mémoire au premier appel ("cold start") — mesuré ~28s une fois chaud ; les
+  // providers cloud répondent en quelques secondes.
+  //
+  // `timeoutMs` borne la requête entière, réessais et attentes de quota compris. L'ancien
+  // code n'avait que ce budget-là, partagé par les quatre modèles Gemini : le moindre
+  // ralentissement le consommait, et la requête retombait sur l'heuristique.
+  const attemptTimeoutMs = isSelfHosted ? 90_000 : 30_000;
+  const timeoutMs = isSelfHosted ? 240_000 : 180_000;
   const controller = new AbortController();
-  // Ollama en CPU peut prendre du temps à charger le modèle en mémoire au premier appel
-  // ("cold start") — mesuré ~28s une fois chaud, mais le tout premier appel peut dépasser
-  // 45s. Les providers cloud n'ont pas ce problème.
-  const timeoutMs = (forceProvider ?? AI_PROVIDER) === 'selfhosted' ? 90000 : 45000;
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const deadline = Date.now() + timeoutMs;
   const failures: string[] = [];
 
+  /** Un appel réseau, borné par `attemptTimeoutMs` sans consommer le budget des autres. */
+  const withAttemptTimeout = async <T>(fn: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+    const attemptController = new AbortController();
+    const onOverallAbort = () => attemptController.abort();
+    controller.signal.addEventListener('abort', onOverallAbort, { once: true });
+    const timer = setTimeout(() => attemptController.abort(), attemptTimeoutMs);
+    try {
+      return await fn(attemptController.signal);
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener('abort', onOverallAbort);
+    }
+  };
+
   try {
-    const attemptOpenAI = async (): Promise<{ text: string; provider: string; model: string }> => {
+    const attemptOpenAI = async (signal: AbortSignal): Promise<{ text: string; provider: string; model: string }> => {
       if (!openaiKey) throw new Error('OPENAI_API_KEY is not configured');
       const response = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
@@ -108,7 +219,7 @@ export async function generateAIText(
             { role: 'user', content: userPrompt },
           ],
         }),
-        signal: controller.signal,
+        signal,
       });
       const data = (await response.json()) as {
         choices?: Array<{ message?: { content?: string } }>;
@@ -123,38 +234,54 @@ export async function generateAIText(
     const attemptGemini = async (): Promise<{ text: string; provider: string; model: string }> => {
       if (!geminiKey) throw new Error('GEMINI_API_KEY is not configured');
       let lastError = 'All Gemini models failed';
+
       for (const model of GEMINI_MODELS) {
-        try {
-          const text = await callGeminiRaw(
-            geminiKey,
-            model,
-            systemPrompt,
-            userPrompt,
-            controller.signal,
-          );
-          return { text, provider: 'gemini', model };
-        } catch (err) {
-          lastError = err instanceof Error ? err.message : String(err);
-          if (isRetryableAIError(err)) {
-            console.warn(`Gemini ${model} unavailable, trying next model...`);
-            continue;
+        // Les quotas gratuits Gemini sont comptés par modèle : basculer sur le suivant a donc
+        // du sens — mais seulement après avoir laissé sa chance au modèle courant, attente
+        // comprise. Enchaîner les quatre modèles sans jamais attendre ne libère aucun quota.
+        for (let attempt = 0; attempt < GEMINI_MAX_RETRIES; attempt += 1) {
+          try {
+            await acquireGeminiSlot(deadline);
+            const text = await withAttemptTimeout((signal) =>
+              callGeminiRaw(geminiKey, model, systemPrompt, userPrompt, signal),
+            );
+            return { text, provider: 'gemini', model };
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : String(err);
+            const kind = aiErrorKind(err);
+
+            if (kind === 'gone') {
+              console.warn(`Gemini ${model} indisponible (retiré, ou hors palier gratuit) — modèle suivant`);
+              break;
+            }
+            if (kind !== 'throttle') throw err;
+
+            const waitMs = retryAfterMs(err) ?? Math.min(2_000 * 2 ** attempt, 30_000);
+            if (attempt === GEMINI_MAX_RETRIES - 1 || Date.now() + waitMs > deadline) {
+              console.warn(`Gemini ${model} toujours saturé après ${attempt + 1} tentative(s) — modèle suivant`);
+              break;
+            }
+            console.warn(
+              `Gemini ${model} saturé (429) — nouvelle tentative dans ${Math.round(waitMs / 1000)}s`,
+            );
+            await sleep(waitMs);
           }
-          throw err;
         }
       }
+
       throw new Error(
-        `Aucun modèle Gemini disponible (quota 429, ou modèle retiré 404 — vérifier GEMINI_MODELS). Attendre quelques minutes, ou ajouter ANTHROPIC_API_KEY / OPENAI_API_KEY. Dernière erreur : ${lastError.slice(0, 160)}`,
+        `Aucun modèle Gemini disponible après réessais (quota 429 persistant, ou modèles retirés — vérifier GEMINI_MODELS). Baisser GEMINI_RPM (actuellement ${GEMINI_RPM}), attendre quelques minutes, ou ajouter ANTHROPIC_API_KEY / OPENAI_API_KEY. Dernière erreur : ${lastError.slice(0, 160)}`,
       );
     };
 
-    const attemptAnthropic = async (): Promise<{ text: string; provider: string; model: string }> => {
+    const attemptAnthropic = async (signal: AbortSignal): Promise<{ text: string; provider: string; model: string }> => {
       if (!anthropicKey) throw new Error('ANTHROPIC_API_KEY is not configured');
-      const text = await callAnthropicRaw(anthropicKey, systemPrompt, userPrompt, controller.signal);
+      const text = await callAnthropicRaw(anthropicKey, systemPrompt, userPrompt, signal);
       return { text, provider: 'anthropic', model: ANTHROPIC_MODEL };
     };
 
-    const attemptSelfHosted = async (): Promise<{ text: string; provider: string; model: string }> => {
-      const text = await callSelfHostedRaw(systemPrompt, userPrompt, controller.signal);
+    const attemptSelfHosted = async (signal: AbortSignal): Promise<{ text: string; provider: string; model: string }> => {
+      const text = await callSelfHostedRaw(systemPrompt, userPrompt, signal);
       return { text, provider: 'selfhosted', model: SELF_HOSTED_MODEL };
     };
 
@@ -181,10 +308,10 @@ export async function generateAIText(
       if (!hasKey) continue;
 
       try {
-        if (provider === 'openai') return await attemptOpenAI();
+        if (provider === 'openai') return await withAttemptTimeout(attemptOpenAI);
         if (provider === 'gemini') return await attemptGemini();
-        if (provider === 'selfhosted') return await attemptSelfHosted();
-        return await attemptAnthropic();
+        if (provider === 'selfhosted') return await withAttemptTimeout(attemptSelfHosted);
+        return await withAttemptTimeout(attemptAnthropic);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         failures.push(`${provider}: ${msg.slice(0, 160)}`);
@@ -223,8 +350,10 @@ async function callGeminiRaw(
   });
   const body = await response.text();
   if (!response.ok) {
-    const err = new Error(body) as Error & { status?: number };
+    const err = new Error(body) as Error & { status?: number; retryAfter?: string };
     err.status = response.status;
+    // Google indique souvent le délai à respecter ; l'honorer vaut mieux que le deviner.
+    err.retryAfter = response.headers.get('retry-after') ?? undefined;
     throw err;
   }
   const data = JSON.parse(body) as {

@@ -6,6 +6,13 @@ export type AIProviderChoice = 'gemini' | 'selfhosted';
 
 type WorkingTicket = Ticket & { categorie_attendue?: string };
 
+/**
+ * Bilan de fiabilité d'un lot. Un repli heuristique renvoie un HTTP 200 et une catégorie
+ * plausible : sans ce décompte, un rapport de conformité peut reposer sur du classement par
+ * mots-clés sans que personne ne s'en aperçoive.
+ */
+export type ClassifyStats = { total: number; fallback: number; reason: string | null };
+
 async function withConcurrency<T, R>(
   items: T[],
   limit: number,
@@ -37,6 +44,7 @@ export function useTicketWorkspace() {
   const [isLoading, setIsLoading] = useState(false);
   const [isClassifying, setIsClassifying] = useState(false);
   const [classifyProgress, setClassifyProgress] = useState({ done: 0, total: 0 });
+  const [classifyStats, setClassifyStats] = useState<ClassifyStats | null>(null);
   const [isGeneratingReport, setIsGeneratingReport] = useState(false);
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -113,12 +121,19 @@ export function useTicketWorkspace() {
     if (tickets.length === 0) return;
     setIsClassifying(true);
     setError(null);
+    setClassifyStats(null);
     setClassifyProgress({ done: 0, total: tickets.length });
+
+    const fallbackReasons: string[] = [];
 
     try {
       const classified = await withConcurrency(
         tickets,
-        4,
+        // Concurrence volontairement basse. Le palier gratuit de Gemini plafonne le débit et
+        // le serveur applique déjà son propre limiteur (GEMINI_RPM) ; monter plus haut
+        // n'accélère rien, cela ne fait qu'allonger la file d'attente côté serveur et
+        // rapprocher chaque requête de son délai d'expiration.
+        2,
         async (ticket) => {
           const res = await apiFetch('/api/classify-ticket', {
             method: 'POST',
@@ -129,13 +144,21 @@ export function useTicketWorkspace() {
             sous_categorie: string;
             confiance: number;
             provider: string;
+            source?: 'ai' | 'fallback';
+            error?: string;
           };
+          if (data.source === 'fallback' && data.error) fallbackReasons.push(data.error);
           return { ...ticket, ...data, provider_utilise: data.provider } as WorkingTicket;
         },
         (done, total) => setClassifyProgress({ done, total }),
       );
 
       setTickets(classified);
+      setClassifyStats({
+        total: classified.length,
+        fallback: classified.filter((t) => t.provider_utilise === 'heuristic').length,
+        reason: fallbackReasons[0] ?? null,
+      });
 
       // Persistance Supabase : awaitée avant la détection de patterns, qui relit l'historique
       // persisté côté serveur pour croiser les lots — sans await, le lot courant pouvait
@@ -200,6 +223,7 @@ export function useTicketWorkspace() {
     isLoading,
     isClassifying,
     classifyProgress,
+    classifyStats,
     isGeneratingReport,
     reportMarkdown,
     error,

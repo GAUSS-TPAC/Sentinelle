@@ -103,11 +103,16 @@ capter une invitation nominative ([AUTH.md](AUTH.md#6-confirmation-de-mail)).
 
 1. [railway.app](https://railway.app), connexion via GitHub.
 2. **New Project → Deploy from GitHub repo** → `GAUSS-TPAC/Sentinelle`.
-3. **Settings** :
-   - Build command : `npm run build`
-   - Start command : `npm run start`
+3. Rien à configurer : Railway détecte Node et utilise les scripts de `package.json` —
+   `npm run build` parce qu'un script `build` existe, puis `npm start`. Les noms tombent
+   juste, il n'y a pas de commande à saisir à la main.
 
-### C2. Variables d'environnement — **avant le premier build**
+⚠️ Ce premier déploiement **réussira** et le service passera à *Online*, même sans aucune
+variable : le build n'en a besoin d'aucune, et le serveur démarre avec `supabase` à `null`.
+« Online » ne signifie donc pas « configuré » — c'est exactement le mode de panne silencieux
+décrit en C2. Le seul verdict fiable est `/api/health` (phase D).
+
+### C2. Variables d'environnement — **avant le build qui compte**
 
 | Variable | Valeur |
 |---|---|
@@ -118,9 +123,25 @@ capter une invitation nominative ([AUTH.md](AUTH.md#6-confirmation-de-mail)).
 | `SUPABASE_ANON_KEY` | clé `anon` |
 | `VITE_SUPABASE_URL` | identique à `SUPABASE_URL` |
 | `VITE_SUPABASE_ANON_KEY` | identique à `SUPABASE_ANON_KEY` |
+| `GEMINI_RPM` | `10` — facultatif, voir ci-dessous |
 | `NPM_CONFIG_PRODUCTION` | `false` — sauf si `tsx` a été déplacé en dépendance de production (A2) |
 
-Ne pas définir `PORT` : Railway l'injecte, et le serveur le lit déjà en repli.
+⚠️ **Ne jamais poser `API_PORT` ni `PORT`.** Railway injecte `PORT` lui-même, et le serveur
+le lit déjà en repli. Le piège vient de la ligne de résolution :
+
+```js
+const PORT = Number(process.env.API_PORT ?? process.env.PORT) || 3001;
+```
+
+`API_PORT` est **prioritaire**. Copier son `.env` local en bloc dans le Raw Editor y importe
+`API_PORT=3001` : le serveur écoute alors sur 3001 pendant que Railway route vers 8080, et
+tout répond `502 Application failed to respond`. Symptôme trompeur — le service passe
+*Online*, les logs de démarrage sont normaux, seul le port de la ligne
+`Sentinelle API server on http://localhost:XXXX` trahit le problème. Ne copier que les sept
+variables du tableau ci-dessus.
+
+Inutile également de poser `SELF_HOSTED_BASE_URL` / `SELF_HOSTED_MODEL` : elles ont des
+valeurs par défaut dans le code et ne désignent rien d'exploitable en cloud.
 
 **Les deux variables `VITE_` ne sont pas optionnelles.** Vite les fige dans le bundle au
 moment du `npm run build` : les ajouter après coup ne change rien tant qu'un nouveau
@@ -131,6 +152,12 @@ déploiement n'est pas déclenché.
 jeton et répond `401` sur toutes les routes de données, pendant que le navigateur, faute de
 client Supabase, n'affiche aucun écran de connexion et n'envoie donc jamais de jeton.
 L'application se charge et tout échoue, sans message explicite.
+
+**Tenir le palier gratuit de Gemini.** Le plafond est d'environ 15 requêtes/minute sur les
+modèles `flash-lite`. Le serveur applique son propre limiteur, global au processus
+(`GEMINI_RPM`, défaut `10`), et absorbe les 429 restants en attendant le délai que Google
+réclame dans `retryDelay` — mesuré à 57–59 s. Laisser la valeur par défaut convient ; la
+baisser à `5` si des 429 persistent. L'augmenter n'accélère rien : le quota est côté Google.
 
 Pourquoi `AI_PROVIDER=gemini` plutôt que `auto` : en `auto`, l'ordre d'essai est
 `openai → gemini → anthropic`, et une clé présente mais invalide consomme quand même son
@@ -172,9 +199,13 @@ Puis dans le navigateur : écran de connexion → Google → onboarding (créer 
 import CSV → classification.
 
 **Contrôler que l'IA répond vraiment.** Dans la réponse de `/api/classify-ticket`, le champ
-`provider` doit valoir `gemini`. S'il vaut `heuristic`, aucun modèle n'a répondu et le
-classement se fait par mots-clés : le résultat s'affiche quand même, il est simplement
-mauvais. Le champ `error` de la même réponse donne la cause.
+`source` doit valoir `ai`. S'il vaut `fallback`, aucun modèle n'a répondu et le classement
+s'est fait par mots-clés : le résultat s'affiche quand même — HTTP 200, catégorie plausible —
+il est simplement mauvais. Le champ `error` de la même réponse donne la cause.
+
+L'interface affiche désormais ce décompte en fin de lot (« N réclamations sur M n'ont pas été
+classées par l'IA »). Un rapport COBAC bâti sur du repli heuristique est le vrai risque ici :
+ne pas générer le rapport tant que ce bandeau est rouge.
 
 ---
 

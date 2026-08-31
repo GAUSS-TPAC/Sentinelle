@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, Cloud, Download, FileText, FileUp, Loader2, ShieldCheck, Upload } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cloud, Download, FileText, FileUp, Loader2, ShieldCheck, Upload } from 'lucide-react';
 import { AccountMenu } from '@/components/AccountMenu';
 import { SentinelleLogo } from '@/components/SentinelleLogo';
 import { AuthScreen } from '@/components/AuthScreen';
@@ -94,6 +94,7 @@ function Workspace() {
     isLoading,
     isClassifying,
     classifyProgress,
+    classifyStats,
     isGeneratingReport,
     reportMarkdown,
     error,
@@ -245,6 +246,40 @@ function Workspace() {
           <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-danger-critical" style={{ backgroundColor: 'color-mix(in oklch, var(--color-danger-critical) 10%, var(--color-surface))' }}>
             <AlertTriangle className="w-4 h-4 shrink-0" />
             {error}
+          </div>
+        )}
+
+        {/* Fiabilité du lot : distingue un classement réellement produit par l'IA d'un repli
+            par mots-clés, que rien ne signalait auparavant (le repli renvoie un HTTP 200 et
+            une catégorie plausible). Déterminant avant de bâtir un rapport COBAC. */}
+        {classifyStats && classifyStats.fallback > 0 && (
+          <div
+            className="flex items-start gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-danger-high"
+            style={{ backgroundColor: 'color-mix(in oklch, var(--color-danger-high) 10%, var(--color-surface))' }}
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              <strong className="font-semibold">
+                {classifyStats.fallback} réclamation(s) sur {classifyStats.total}
+              </strong>{' '}
+              n'ont pas été classées par l'IA : repli sur les mots-clés, résultat peu fiable. À
+              reclasser avant tout rapport de conformité.
+              {classifyStats.reason && (
+                <span className="block mt-1 font-mono text-[11.5px] text-ink-soft">
+                  {classifyStats.reason.slice(0, 200)}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+
+        {classifyStats && classifyStats.fallback === 0 && classifyStats.total > 0 && (
+          <div
+            className="flex items-center gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-success"
+            style={{ backgroundColor: 'color-mix(in oklch, var(--color-success) 10%, var(--color-surface))' }}
+          >
+            <CheckCircle2 className="w-4 h-4 shrink-0" />
+            {classifyStats.total} réclamation(s) classées par l'IA, sans aucun repli heuristique.
           </div>
         )}
 
