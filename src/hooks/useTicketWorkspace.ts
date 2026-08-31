@@ -83,6 +83,24 @@ export function useTicketWorkspace() {
   }, []);
 
   /** Remplace le portefeuille courant par un fichier importé (CSV / Excel / JSON). */
+  /**
+   * Remet le plan de travail à zéro, côté navigateur uniquement.
+   *
+   * Ne touche délibérément pas au portefeuille persisté dans Supabase : un rechargement de
+   * la page le réaffiche. Purger la base est une action destructrice et irréversible, qui
+   * n'a pas sa place derrière un bouton de remise à zéro de l'affichage — d'autant que les
+   * données sont partagées avec toute l'organisation.
+   */
+  const resetWorkspace = useCallback(() => {
+    setTickets([]);
+    setPatterns([]);
+    setReportMarkdown(null);
+    setError(null);
+    setSourceName(null);
+    setClassifyStats(null);
+    setClassifyProgress({ done: 0, total: 0 });
+  }, []);
+
   const importTickets = useCallback((imported: WorkingTicket[], fileName: string) => {
     setTickets(imported);
     setPatterns([]);
@@ -231,6 +249,7 @@ export function useTicketWorkspace() {
     sourceName,
     loadSampleTickets,
     importTickets,
+    resetWorkspace,
     classifyAll,
     generateReport,
   };

@@ -88,6 +88,26 @@ const ALIASES: Record<TicketField, string[]> = {
 };
 
 /**
+ * Correspondance approximative d'un en-tête, par mots entiers plutôt que par sous-chaîne.
+ *
+ * La containment brute était piégeuse : l'alias « age » (ancienneté en jours) capturait la
+ * colonne « Agence » — présente dans quasiment tous les exports bancaires — et le délai de
+ * traitement se perdait alors en silence, faussant le calcul de conformité COBAC sans le
+ * moindre message. On exige donc que l'alias apparaisse comme suite de mots entiers ; la
+ * sous-chaîne n'est tolérée que pour les alias assez longs pour ne pas collisionner
+ * (« delai » dans « delaireponse », écrit sans séparateur).
+ */
+function matchesLoosely(norm: string, alias: string): boolean {
+  const tokens = norm.split('_').filter(Boolean);
+  const aliasTokens = alias.split('_').filter(Boolean);
+
+  const contiguous = tokens.some((_, i) => aliasTokens.every((t, k) => tokens[i + k] === t));
+  if (contiguous) return true;
+  if (alias.length >= 5 && norm.includes(alias)) return true;
+  return norm.length >= 5 && alias.includes(norm);
+}
+
+/**
  * Devine la correspondance à partir des en-têtes. Correspondance exacte d'abord, puis
  * inclusion — « Description de la réclamation » doit tomber sur `texte_brut`. Une colonne
  * déjà attribuée n'est pas réutilisée pour un autre champ.
@@ -107,9 +127,7 @@ export function guessMapping(columns: string[]): ColumnMapping {
 
       const hit = normalized.find(({ raw, norm }) => {
         if (taken.has(raw)) return false;
-        return pass === 'exact'
-          ? aliases.includes(norm)
-          : aliases.some((a) => norm.includes(a) || a.includes(norm));
+        return pass === 'exact' ? aliases.includes(norm) : aliases.some((a) => matchesLoosely(norm, a));
       });
 
       if (hit) {

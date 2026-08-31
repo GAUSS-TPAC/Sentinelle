@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Cloud, Download, FileText, FileUp, Loader2, ShieldCheck, Upload } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Cloud, Download, FileText, FileUp, Loader2, RotateCcw, ShieldCheck, Upload } from 'lucide-react';
 import { AccountMenu } from '@/components/AccountMenu';
 import { SentinelleLogo } from '@/components/SentinelleLogo';
 import { AuthScreen } from '@/components/AuthScreen';
@@ -102,12 +102,27 @@ function Workspace() {
     sourceName,
     loadSampleTickets,
     importTickets,
+    resetWorkspace,
     classifyAll,
     generateReport,
   } = useTicketWorkspace();
 
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>(ALL_TAB);
+
+  /**
+   * Une classification complète peut représenter une heure de traitement sous le palier
+   * gratuit : on ne la jette pas sur un clic malencontreux. La confirmation n'apparaît que
+   * s'il y a réellement quelque chose à perdre.
+   */
+  const handleReset = () => {
+    if (tickets.length > 0 && !window.confirm(
+      `Vider le tableau de bord ? Les ${tickets.length} réclamation(s) affichées, leur classement et le rapport seront retirés de l'écran.`,
+    )) return;
+    resetWorkspace();
+    setActiveTab(ALL_TAB);
+    setIsImportOpen(false);
+  };
 
   const hasClassified = tickets.some((t) => t.categorie_causale);
 
@@ -214,6 +229,16 @@ function Workspace() {
         >
           {isClassifying ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
           {isClassifying ? `Classification… ${classifyProgress.done}/${classifyProgress.total}` : 'Classer les tickets'}
+        </button>
+
+        <button
+          onClick={handleReset}
+          disabled={tickets.length === 0 || isClassifying || isGeneratingReport}
+          title="Vide l'écran. Le portefeuille enregistré dans Supabase n'est pas supprimé : il réapparaît au rechargement de la page."
+          className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-line bg-surface text-ink-soft text-[13px] font-medium disabled:opacity-50 hover:bg-elevated hover:text-ink transition-colors"
+        >
+          <RotateCcw className="w-3.5 h-3.5" />
+          Réinitialiser
         </button>
 
         <button
