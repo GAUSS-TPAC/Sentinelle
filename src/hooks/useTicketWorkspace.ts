@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { apiFetch } from '@/lib/apiClient';
+import { fetchModelCatalog, type ModelInfo } from '@/lib/modelCatalog';
+import {
+  scoreModel,
+  type BenchmarkAttempt,
+  type ModelScore,
+} from '@/lib/modelBenchmark';
 import type { DetectedPattern, Ticket } from '@/lib/types';
 
 export type AIProviderChoice = 'gemini' | 'selfhosted';
+
+export type BenchmarkProgress = { model: string; done: number; total: number } | null;
 
 type WorkingTicket = Ticket & { categorie_attendue?: string };
 
@@ -49,6 +57,54 @@ export function useTicketWorkspace() {
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sourceName, setSourceName] = useState<string | null>(null);
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [modelId, setModelId] = useState<string | null>(null);
+  const [benchmarkScores, setBenchmarkScores] = useState<ModelScore[] | null>(null);
+  const [benchmarkSample, setBenchmarkSample] = useState(0);
+  const [benchmarkProgress, setBenchmarkProgress] = useState<BenchmarkProgress>(null);
+  const [isBenchmarking, setIsBenchmarking] = useState(false);
+
+  /**
+   * Catalogue chargé une fois : la liste des modèles Ollama installés change au rythme de
+   * l'opérateur, pas de l'utilisateur. Un échec est silencieux — l'application reste
+   * utilisable avec le modèle par défaut du serveur.
+   */
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const catalogue = await fetchModelCatalog();
+        if (!active) return;
+        setModels(catalogue.models);
+      } catch {
+        // Catalogue indisponible : le serveur choisira seul son modèle.
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  /** Modèles du provider actuellement sélectionné, utilisables seulement. */
+  const modelsForProvider = useMemo(
+    () => models.filter((m) => m.provider === provider && m.disponible && m.model),
+    [models, provider],
+  );
+
+  /**
+   * Le modèle choisi doit toujours appartenir au provider courant : basculer de « cloud » à
+   * « auto-hébergé » sans resélectionner enverrait un nom de modèle Gemini à Ollama.
+   *
+   * À défaut de choix explicite, on retient le premier modèle *sans avertissement* plutôt que
+   * le premier de la liste : Ollama énumère ses modèles dans son propre ordre, et un modèle
+   * plus gros que la mémoire disponible ferait échouer tout un lot sans que l'utilisateur ait
+   * rien sélectionné. Un défaut ne doit pas être un piège.
+   */
+  const selectedModel = useMemo(() => {
+    const choisi = modelsForProvider.find((m) => m.id === modelId);
+    if (choisi) return choisi;
+    return modelsForProvider.find((m) => !m.avertissement) ?? modelsForProvider[0] ?? null;
+  }, [modelsForProvider, modelId]);
 
   const loadSampleTickets = useCallback(async () => {
     setIsLoading(true);
@@ -155,7 +211,11 @@ export function useTicketWorkspace() {
         async (ticket) => {
           const res = await apiFetch('/api/classify-ticket', {
             method: 'POST',
-            body: JSON.stringify({ texte_brut: ticket.texte_brut, provider }),
+            body: JSON.stringify({
+              texte_brut: ticket.texte_brut,
+              provider,
+              ...(selectedModel ? { model: selectedModel.model } : {}),
+            }),
           });
           const data = (await res.json()) as {
             categorie_causale: string;
@@ -207,7 +267,113 @@ export function useTicketWorkspace() {
     } finally {
       setIsClassifying(false);
     }
-  }, [tickets, provider]);
+  }, [tickets, provider, selectedModel]);
+
+  /**
+   * Compare plusieurs modèles sur un même échantillon de réclamations déjà étiquetées.
+   *
+   * Trois choix de méthode qui conditionnent la validité du résultat :
+   *
+   *  - **Même échantillon pour tous les modèles**, tiré une seule fois. Comparer deux modèles
+   *    sur deux tirages différents ne mesurerait que la chance du tirage.
+   *  - **Aucune écriture.** Le banc ne persiste rien et ne touche pas au portefeuille affiché :
+   *    c'est une mesure, pas un classement de production. Sans cela, comparer trois modèles
+   *    écraserait trois fois le classement du portefeuille.
+   *  - **Un seul appel à la fois pour un modèle local.** Ollama sérialise de toute façon sur
+   *    deux cœurs ; paralléliser n'accélère rien et fausse la latence mesurée.
+   */
+  const runBenchmark = useCallback(
+    async (modelIds: string[], tailleEchantillon: number) => {
+      const etiquetes = tickets.filter((t) => t.categorie_attendue);
+      if (etiquetes.length === 0) {
+        setError(
+          "Comparaison impossible : aucune réclamation ne porte de catégorie de référence. Importe un fichier dont une colonne contient un classement déjà connu (champ « Catégorie déjà connue » de l'écran d'import).",
+        );
+        return;
+      }
+      const choisis = models.filter((m) => modelIds.includes(m.id) && m.disponible && m.model);
+      if (choisis.length === 0) {
+        setError('Comparaison impossible : aucun modèle sélectionné.');
+        return;
+      }
+
+      setIsBenchmarking(true);
+      setError(null);
+      setBenchmarkScores(null);
+
+      // Échantillon déterministe *et* étalé sur tout le fichier : on prend des indices
+      // régulièrement espacés plutôt que les n premières lignes. Un export de réclamations est
+      // presque toujours trié par date, et les n premières lignes appartiennent alors à une
+      // poignée de catégories — on mesurerait la performance du modèle sur un seul type de
+      // réclamation en croyant mesurer sa performance générale. Déterministe reste essentiel :
+      // on compare des mesures entre elles, pas des tirages.
+      const voulu = Math.min(Math.max(1, tailleEchantillon), etiquetes.length);
+      const pas = etiquetes.length / voulu;
+      const echantillon = Array.from(
+        { length: voulu },
+        (_, i) => etiquetes[Math.floor(i * pas)],
+      );
+      setBenchmarkSample(echantillon.length);
+
+      try {
+        const scores: ModelScore[] = [];
+
+        for (const m of choisis) {
+          const attempts: BenchmarkAttempt[] = [];
+          setBenchmarkProgress({ model: m.label, done: 0, total: echantillon.length });
+
+          await withConcurrency(
+            echantillon,
+            m.emplacement === 'local' ? 1 : 2,
+            async (ticket) => {
+              const debut = performance.now();
+              try {
+                const res = await apiFetch('/api/classify-ticket', {
+                  method: 'POST',
+                  body: JSON.stringify({
+                    texte_brut: ticket.texte_brut,
+                    provider: m.provider,
+                    model: m.model,
+                  }),
+                });
+                const data = (await res.json()) as {
+                  categorie_causale?: string;
+                  confiance?: number;
+                  source?: 'ai' | 'fallback';
+                };
+                attempts.push({
+                  obtenue: data.categorie_causale ?? '',
+                  attendue: ticket.categorie_attendue ?? '',
+                  confiance: typeof data.confiance === 'number' ? data.confiance : null,
+                  repli: data.source === 'fallback',
+                  latenceMs: performance.now() - debut,
+                });
+              } catch {
+                // Échec réseau : compté comme une non-réponse du modèle, pas ignoré.
+                attempts.push({
+                  obtenue: '',
+                  attendue: ticket.categorie_attendue ?? '',
+                  confiance: null,
+                  repli: true,
+                  latenceMs: performance.now() - debut,
+                });
+              }
+            },
+            (done, total) => setBenchmarkProgress({ model: m.label, done, total }),
+          );
+
+          scores.push(scoreModel(m.id, m.label, m.emplacement, attempts, m.rpmLimite));
+          setBenchmarkScores([...scores]);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Échec de la comparaison de modèles');
+      } finally {
+        setIsBenchmarking(false);
+        setBenchmarkProgress(null);
+      }
+    },
+    [tickets, models],
+  );
 
   const generateReport = useCallback(async () => {
     setIsGeneratingReport(true);
@@ -247,6 +413,15 @@ export function useTicketWorkspace() {
     error,
     accuracy,
     sourceName,
+    models,
+    modelsForProvider,
+    selectedModel,
+    setModelId,
+    benchmarkScores,
+    benchmarkSample,
+    benchmarkProgress,
+    isBenchmarking,
+    runBenchmark,
     loadSampleTickets,
     importTickets,
     resetWorkspace,

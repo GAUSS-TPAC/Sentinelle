@@ -3,7 +3,7 @@ import cors from 'cors';
 import 'dotenv/config';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import {
   CLASSIFICATION_SYSTEM_PROMPT,
   buildClassificationPrompt,
@@ -34,6 +34,19 @@ const GEMINI_MODELS = (
     ? [process.env.GEMINI_MODEL]
     : ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash']
 ) as string[];
+
+/**
+ * Garde-fou de facturation. Le sélecteur de modèle de l'interface laisse le navigateur
+ * nommer le modèle Gemini : sans contrôle, un appel forgé — ou une faute de frappe —
+ * pourrait demander un modèle `pro`, dont le quota gratuit est nul et qui exige un compte
+ * de facturation. On n'accepte donc que les familles `flash` / `flash-lite`, et on refuse
+ * explicitement tout ce qui porte `pro`. Le budget du projet est zéro, par contrainte.
+ */
+function isFreeTierGeminiModel(model: string): boolean {
+  if (!/^gemini-[\w.-]+$/.test(model)) return false;
+  if (/\bpro\b|-pro/.test(model)) return false;
+  return /flash/.test(model);
+}
 
 // Self-hosted (Ollama, OpenAI-compatible /v1/chat/completions) — souveraineté des données.
 const SELF_HOSTED_BASE_URL = process.env.SELF_HOSTED_BASE_URL ?? 'http://localhost:11434';
@@ -165,6 +178,7 @@ export async function generateAIText(
   systemPrompt: string,
   userPrompt: string,
   forceProvider?: 'openai' | 'gemini' | 'anthropic' | 'selfhosted',
+  forceModel?: string,
 ): Promise<{ text: string; provider: string; model: string }> {
   const geminiKey = process.env.GEMINI_API_KEY;
   const anthropicKey = process.env.ANTHROPIC_API_KEY;
@@ -180,8 +194,18 @@ export async function generateAIText(
   // `timeoutMs` borne la requête entière, réessais et attentes de quota compris. L'ancien
   // code n'avait que ce budget-là, partagé par les quatre modèles Gemini : le moindre
   // ralentissement le consommait, et la requête retombait sur l'heuristique.
-  const attemptTimeoutMs = isSelfHosted ? 90_000 : 30_000;
-  const timeoutMs = isSelfHosted ? 240_000 : 180_000;
+  //
+  // Mesuré sur un i7-4600U sans GPU : gemma3:1b répond en ~35 s à chaud, ~55 s sous charge,
+  // mais le *premier* appel après le démarrage d'Ollama charge les poids en mémoire et dépasse
+  // 90 s. Avec l'ancien budget, le premier ticket de chaque lot local retombait donc
+  // systématiquement sur l'heuristique — un échec garanti, pas un cas limite. Les deux budgets
+  // sont réglables pour une machine plus lente ou un modèle plus gros.
+  const attemptTimeoutMs = isSelfHosted
+    ? Number(process.env.SELF_HOSTED_ATTEMPT_TIMEOUT_MS) || 180_000
+    : 30_000;
+  const timeoutMs = isSelfHosted
+    ? Number(process.env.SELF_HOSTED_TIMEOUT_MS) || 420_000
+    : 180_000;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   const deadline = Date.now() + timeoutMs;
@@ -235,7 +259,16 @@ export async function generateAIText(
       if (!geminiKey) throw new Error('GEMINI_API_KEY is not configured');
       let lastError = 'All Gemini models failed';
 
-      for (const model of GEMINI_MODELS) {
+      // Modèle imposé par l'appelant : on n'essaie que celui-là, sans cascade — sinon le
+      // banc de comparaison attribuerait à un modèle le résultat produit par un autre.
+      if (forceModel && !isFreeTierGeminiModel(forceModel)) {
+        throw new Error(
+          `Modèle Gemini refusé : « ${forceModel} » n'est pas un modèle du palier gratuit (seules les familles flash / flash-lite le sont, et les modèles pro sont exclus car facturés).`,
+        );
+      }
+      const geminiModels = forceModel ? [forceModel] : GEMINI_MODELS;
+
+      for (const model of geminiModels) {
         // Les quotas gratuits Gemini sont comptés par modèle : basculer sur le suivant a donc
         // du sens — mais seulement après avoir laissé sa chance au modèle courant, attente
         // comprise. Enchaîner les quatre modèles sans jamais attendre ne libère aucun quota.
@@ -281,8 +314,9 @@ export async function generateAIText(
     };
 
     const attemptSelfHosted = async (signal: AbortSignal): Promise<{ text: string; provider: string; model: string }> => {
-      const text = await callSelfHostedRaw(systemPrompt, userPrompt, signal);
-      return { text, provider: 'selfhosted', model: SELF_HOSTED_MODEL };
+      const model = forceModel ?? SELF_HOSTED_MODEL;
+      const text = await callSelfHostedRaw(model, systemPrompt, userPrompt, signal);
+      return { text, provider: 'selfhosted', model };
     };
 
     // Une requête peut forcer un provider précis (ex: sélecteur cloud/auto-hébergé dans
@@ -399,6 +433,7 @@ async function callAnthropicRaw(
 
 /** Ollama exposes an OpenAI-compatible /v1/chat/completions endpoint — no API key needed. */
 async function callSelfHostedRaw(
+  model: string,
   systemPrompt: string,
   userPrompt: string,
   signal: AbortSignal,
@@ -407,7 +442,7 @@ async function callSelfHostedRaw(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      model: SELF_HOSTED_MODEL,
+      model,
       temperature: 0.3,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -419,7 +454,7 @@ async function callSelfHostedRaw(
   const body = await response.text();
   if (!response.ok) {
     throw new Error(
-      `Self-hosted (Ollama) error: ${body.slice(0, 200)}. Is "ollama serve" running and "${SELF_HOSTED_MODEL}" pulled?`,
+      `Self-hosted (Ollama) error: ${body.slice(0, 200)}. Is "ollama serve" running and "${model}" pulled?`,
     );
   }
   const data = JSON.parse(body) as {
@@ -431,7 +466,11 @@ async function callSelfHostedRaw(
 }
 
 app.post('/api/classify-ticket', async (req, res) => {
-  const { texte_brut: texteBrut, provider } = req.body as { texte_brut?: string; provider?: string };
+  const { texte_brut: texteBrut, provider, model: requestedModel } = req.body as {
+    texte_brut?: string;
+    provider?: string;
+    model?: string;
+  };
 
   if (!texteBrut?.trim()) {
     res.status(400).json({ error: 'texte_brut is required' });
@@ -443,11 +482,18 @@ app.post('/api/classify-ticket', async (req, res) => {
       ? provider
       : undefined;
 
+  // Un modèle ne se choisit qu'avec son provider : sans lui, on ne saurait pas à quelle API
+  // l'adresser, et un nom de modèle Ollama envoyé à Gemini échouerait de façon obscure.
+  const forceModel = forceProvider && typeof requestedModel === 'string' && requestedModel.trim()
+    ? requestedModel.trim()
+    : undefined;
+
   try {
     const { text, provider: usedProvider, model } = await generateAIText(
       CLASSIFICATION_SYSTEM_PROMPT,
       buildClassificationPrompt(texteBrut),
       forceProvider,
+      forceModel,
     );
     const classification = parseClassification(text);
     res.json({ ...classification, provider: usedProvider, model, source: 'ai' });
@@ -462,6 +508,124 @@ app.post('/api/classify-ticket', async (req, res) => {
       error: err instanceof Error ? err.message : 'AI classification failed',
     });
   }
+});
+
+/**
+ * Catalogue des modèles réellement utilisables, pour alimenter le sélecteur de l'interface.
+ *
+ * Les modèles Gemini viennent de la configuration (déjà restreinte au palier gratuit) ;
+ * les modèles auto-hébergés sont interrogés à chaud auprès d'Ollama, parce que l'opérateur
+ * en installe et en retire sans redémarrer Sentinelle.
+ *
+ * Chaque entrée porte de quoi décider, pas seulement de quoi afficher : la taille du modèle
+ * et la mémoire disponible, car un modèle plus gros que la RAM libre ne « ralentit » pas —
+ * il fait tuer le serveur Ollama par le noyau, et toutes les réclamations du lot retombent
+ * alors en silence sur le classement par mots-clés.
+ */
+function availableMemoryBytes(): number | null {
+  try {
+    const meminfo = readFileSync('/proc/meminfo', 'utf8');
+    const match = /MemAvailable:\s+(\d+) kB/.exec(meminfo);
+    if (match) return Number(match[1]) * 1024;
+  } catch {
+    // /proc absent (conteneur minimal, autre OS) : on ne devine pas.
+  }
+  return null;
+}
+
+export type ModelInfo = {
+  id: string;
+  provider: 'gemini' | 'selfhosted' | 'openai' | 'anthropic';
+  model: string;
+  label: string;
+  /** 'cloud' : les données sortent. 'local' : elles ne quittent pas la machine. */
+  emplacement: 'cloud' | 'local';
+  disponible: boolean;
+  tailleOctets?: number;
+  /** Débit maximal imposé par le serveur, en requêtes/minute. Absent = non plafonné. */
+  rpmLimite?: number;
+  /** Information neutre à afficher (quota, taille) — n'empêche rien. */
+  note?: string;
+  /**
+   * Problème réel : modèle indisponible, ou dont l'usage fait échouer le lot. Distinct de
+   * `note`, car c'est ce champ qui écarte un modèle de la sélection par défaut et déclenche
+   * l'icône d'alerte. Confondre les deux ferait signaler un quota normal comme un danger, et
+   * un danger réel comme une simple information.
+   */
+  avertissement?: string;
+};
+
+app.get('/api/models', async (_req, res) => {
+  const models: ModelInfo[] = [];
+
+  for (const model of GEMINI_MODELS) {
+    models.push({
+      id: `gemini:${model}`,
+      provider: 'gemini',
+      model,
+      label: model,
+      emplacement: 'cloud',
+      disponible: Boolean(process.env.GEMINI_API_KEY),
+      rpmLimite: GEMINI_RPM,
+      note: `Palier gratuit : ${GEMINI_RPM} requêtes/minute appliquées par le serveur.`,
+      avertissement: process.env.GEMINI_API_KEY ? undefined : 'GEMINI_API_KEY absente du serveur.',
+    });
+  }
+
+  if (process.env.OPENAI_API_KEY) {
+    models.push({
+      id: `openai:${OPENAI_MODEL}`, provider: 'openai', model: OPENAI_MODEL,
+      label: OPENAI_MODEL, emplacement: 'cloud', disponible: true,
+    });
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    models.push({
+      id: `anthropic:${ANTHROPIC_MODEL}`, provider: 'anthropic', model: ANTHROPIC_MODEL,
+      label: ANTHROPIC_MODEL, emplacement: 'cloud', disponible: true,
+    });
+  }
+
+  const ramLibre = availableMemoryBytes();
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 4_000);
+    const response = await fetch(`${SELF_HOSTED_BASE_URL}/api/tags`, { signal: controller.signal });
+    clearTimeout(timer);
+    const data = (await response.json()) as {
+      models?: Array<{ name?: string; size?: number; details?: { parameter_size?: string } }>;
+    };
+    for (const m of data.models ?? []) {
+      if (!m.name) continue;
+      const taille = m.size ?? 0;
+      // Marge de 15 % : Ollama alloue aussi le contexte et les tampons, pas seulement les poids.
+      const tientEnMemoire = ramLibre === null || taille === 0 || taille * 1.15 < ramLibre;
+      models.push({
+        id: `selfhosted:${m.name}`,
+        provider: 'selfhosted',
+        model: m.name,
+        label: m.details?.parameter_size ? `${m.name} (${m.details.parameter_size})` : m.name,
+        emplacement: 'local',
+        disponible: true,
+        tailleOctets: taille || undefined,
+        note: taille ? `${(taille / 1e9).toFixed(1)} Go sur disque.` : undefined,
+        avertissement: tientEnMemoire
+          ? undefined
+          : `Modèle de ${(taille / 1e9).toFixed(1)} Go pour ${(ramLibre! / 1e9).toFixed(1)} Go de RAM disponible : le noyau risque de tuer Ollama en cours de lot.`,
+      });
+    }
+  } catch {
+    models.push({
+      id: 'selfhosted:indisponible',
+      provider: 'selfhosted',
+      model: '',
+      label: 'Ollama injoignable',
+      emplacement: 'local',
+      disponible: false,
+      avertissement: `Aucune réponse de ${SELF_HOSTED_BASE_URL}. Lancer « ollama serve ».`,
+    });
+  }
+
+  res.json({ models, ramDisponibleOctets: ramLibre });
 });
 
 // ---------------------------------------------------------------- persistance Supabase

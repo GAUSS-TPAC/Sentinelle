@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, Cloud, Download, FileText, FileUp, Loader2, RotateCcw, ShieldCheck, Upload } from 'lucide-react';
+import { AlertTriangle, BarChart3, CheckCircle2, Cloud, Download, FileText, FileUp, Loader2, RotateCcw, ShieldCheck, Upload } from 'lucide-react';
 import { AccountMenu } from '@/components/AccountMenu';
 import { SentinelleLogo } from '@/components/SentinelleLogo';
 import { AuthScreen } from '@/components/AuthScreen';
 import { ImportDialog } from '@/components/ImportDialog';
+import { ModelComparison } from '@/components/ModelComparison';
 import { OnboardingScreen } from '@/components/OnboardingScreen';
 import { useAuth } from '@/auth/AuthProvider';
 import { SegmentedControl } from '@/components/SegmentedControl';
@@ -100,6 +101,15 @@ function Workspace() {
     error,
     accuracy,
     sourceName,
+    models,
+    modelsForProvider,
+    selectedModel,
+    setModelId,
+    benchmarkScores,
+    benchmarkSample,
+    benchmarkProgress,
+    isBenchmarking,
+    runBenchmark,
     loadSampleTickets,
     importTickets,
     resetWorkspace,
@@ -108,7 +118,10 @@ function Workspace() {
   } = useTicketWorkspace();
 
   const [isImportOpen, setIsImportOpen] = useState(false);
+  const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>(ALL_TAB);
+
+  const nbEtiquetes = tickets.filter((t) => t.categorie_attendue).length;
 
   /**
    * Une classification complète peut représenter une heure de traitement sous le palier
@@ -199,6 +212,27 @@ function Workspace() {
               },
             ]}
           />
+
+          {/* Choix du modèle à l'intérieur du provider retenu. Un <select> natif plutôt qu'un
+              menu maison : navigation clavier, lecteur d'écran et affichage mobile sont acquis. */}
+          {modelsForProvider.length > 0 && (
+            <label className="flex items-center gap-2">
+              <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-faint">Modèle</span>
+              <select
+                value={selectedModel?.id ?? ''}
+                onChange={(e) => setModelId(e.target.value)}
+                disabled={isClassifying || isBenchmarking}
+                className="px-2.5 py-1.5 rounded-lg border border-line bg-surface text-ink text-[12.5px] disabled:opacity-50 max-w-[14rem]"
+                title={selectedModel?.avertissement ?? selectedModel?.note ?? undefined}
+              >
+                {modelsForProvider.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
       </header>
 
@@ -239,6 +273,15 @@ function Workspace() {
         >
           <RotateCcw className="w-3.5 h-3.5" />
           Réinitialiser
+        </button>
+
+        <button
+          onClick={() => setIsCompareOpen((v) => !v)}
+          aria-expanded={isCompareOpen}
+          className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-line bg-surface text-ink-soft text-[13px] font-medium hover:bg-elevated hover:text-ink transition-colors"
+        >
+          <BarChart3 className="w-3.5 h-3.5" />
+          Comparer les modèles
         </button>
 
         <button
@@ -305,6 +348,20 @@ function Workspace() {
           >
             <CheckCircle2 className="w-4 h-4 shrink-0" />
             {classifyStats.total} réclamation(s) classées par l'IA, sans aucun repli heuristique.
+          </div>
+        )}
+
+        {isCompareOpen && (
+          <div className="mb-1">
+            <ModelComparison
+              models={models}
+              scores={benchmarkScores}
+              echantillon={benchmarkSample}
+              progress={benchmarkProgress}
+              isBenchmarking={isBenchmarking}
+              nbEtiquetes={nbEtiquetes}
+              onRun={runBenchmark}
+            />
           </div>
         )}
 
