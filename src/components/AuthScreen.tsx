@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Loader2, Mail } from 'lucide-react';
 import { useAuth } from '@/auth/AuthProvider';
+import type { OAuthProvider } from '@/lib/supabaseBrowser';
 import { SentinelleLogo } from '@/components/SentinelleLogo';
 
 function GoogleMark() {
@@ -31,7 +32,7 @@ const OAUTH_BUTTON =
 export function AuthScreen() {
   const {
     signInWithPassword, signUpWithPassword, signInWithOAuth, requestPasswordReset,
-    updatePassword, passwordRecovery, error: authError, clearError,
+    updatePassword, passwordRecovery, oauthProviders, error: authError, clearError,
   } = useAuth();
   const [chosenMode, setMode] = useState<'connexion' | 'inscription' | 'oubli'>('connexion');
   // Le retour d'un lien de réinitialisation impose le choix d'un nouveau mot de passe.
@@ -63,8 +64,12 @@ export function AuthScreen() {
       } else {
         const { needsConfirmation } = await signUpWithPassword(email.trim(), password);
         if (needsConfirmation) {
+          // Formulation volontairement conditionnelle : pour une adresse déjà inscrite,
+          // Supabase répond comme pour une création (il ne révèle pas quels comptes existent)
+          // mais n'envoie aucun lien. Annoncer « compte créé » laissait alors attendre un
+          // e-mail qui n'arriverait jamais.
           setNotice(
-            `Compte créé. Ouvre le lien de confirmation envoyé à ${email.trim()} pour activer l'accès.`,
+            `Si ${email.trim()} n'a pas encore de compte, un lien de confirmation vient d'y être envoyé : ouvre-le pour activer l'accès. Si tu as déjà un compte, connecte-toi ou utilise « Mot de passe oublié ».`,
           );
         }
       }
@@ -75,7 +80,7 @@ export function AuthScreen() {
     }
   };
 
-  const oauth = async (provider: 'google' | 'azure') => {
+  const oauth = async (provider: OAuthProvider) => {
     setError(null);
     clearError();
     setBusy(provider);
@@ -88,7 +93,7 @@ export function AuthScreen() {
   };
 
   const withPassword = mode !== 'oubli';
-  const withProviders = mode === 'connexion' || mode === 'inscription';
+  const withProviders = (mode === 'connexion' || mode === 'inscription') && oauthProviders.length > 0;
   const copy = {
     connexion: {
       title: 'Connexion',
@@ -154,14 +159,18 @@ export function AuthScreen() {
         {withProviders && (
         <>
         <div className="flex flex-col gap-2.5">
+          {oauthProviders.includes('google') && (
           <button className={OAUTH_BUTTON} disabled={busy !== null} onClick={() => void oauth('google')}>
             {busy === 'google' ? <Loader2 className="w-4 h-4 animate-spin" /> : <GoogleMark />}
             Continuer avec Google
           </button>
+          )}
+          {oauthProviders.includes('azure') && (
           <button className={OAUTH_BUTTON} disabled={busy !== null} onClick={() => void oauth('azure')}>
             {busy === 'azure' ? <Loader2 className="w-4 h-4 animate-spin" /> : <MicrosoftMark />}
             Continuer avec Microsoft
           </button>
+          )}
         </div>
 
         <div className="flex items-center gap-3 my-5">

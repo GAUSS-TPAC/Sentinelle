@@ -11,6 +11,7 @@ import { SegmentedControl } from '@/components/SegmentedControl';
 import { useTicketWorkspace } from '@/hooks/useTicketWorkspace';
 import { downloadText } from '@/lib/dataExporter';
 import { categoryTagStyle } from '@/lib/categoryColor';
+import { paginate, totalPages } from '@/lib/pagination';
 import type { DetectedPattern } from '@/lib/types';
 
 /** Onglet « toutes catégories » — valeur sentinelle, distincte de toute catégorie réelle. */
@@ -120,6 +121,12 @@ function Workspace() {
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [isCompareOpen, setIsCompareOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<string>(ALL_TAB);
+  const [page, setPage] = useState(1);
+
+  const selectTab = (tab: string) => {
+    setActiveTab(tab);
+    setPage(1);
+  };
 
   const nbEtiquetes = tickets.filter((t) => t.categorie_attendue).length;
 
@@ -133,7 +140,7 @@ function Workspace() {
       `Vider le tableau de bord ? Les ${tickets.length} réclamation(s) affichées, leur classement et le rapport seront retirés de l'écran.`,
     )) return;
     resetWorkspace();
-    setActiveTab(ALL_TAB);
+    selectTab(ALL_TAB);
     setIsImportOpen(false);
   };
 
@@ -162,6 +169,13 @@ function Workspace() {
     if (currentTab === UNCLASSIFIED_TAB) return tickets.filter((t) => !t.categorie_causale);
     return tickets.filter((t) => t.categorie_causale === currentTab);
   }, [tickets, currentTab]);
+
+  // Un portefeuille de plusieurs milliers de lignes ne se rend pas d'un bloc. La page est
+  // bornée ici plutôt que remise à 1 par effet : le nombre de pages peut baisser en cours de
+  // classification, quand des réclamations quittent l'onglet affiché.
+  const pageCount = totalPages(visibleTickets.length);
+  const currentPage = Math.min(page, pageCount);
+  const pageTickets = useMemo(() => paginate(visibleTickets, currentPage), [visibleTickets, currentPage]);
 
   return (
     <div className="min-h-screen bg-base text-ink font-sans">
@@ -320,6 +334,27 @@ function Workspace() {
         {/* Fiabilité du lot : distingue un classement réellement produit par l'IA d'un repli
             par mots-clés, que rien ne signalait auparavant (le repli renvoie un HTTP 200 et
             une catégorie plausible). Déterminant avant de bâtir un rapport COBAC. */}
+        {classifyStats && classifyStats.echecs > 0 && (
+          <div
+            className="flex items-start gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-danger-critical"
+            style={{ backgroundColor: 'color-mix(in oklch, var(--color-danger-critical) 10%, var(--color-surface))' }}
+          >
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              <strong className="font-semibold">
+                {classifyStats.echecs} réclamation(s) sur {classifyStats.total}
+              </strong>{' '}
+              n'ont pas pu être traitées : l'appel au serveur a échoué, leur classement n'a pas
+              changé. Relancer la classification.
+              {classifyStats.reason && (
+                <span className="block mt-1 font-mono text-[11.5px] text-ink-soft">
+                  {classifyStats.reason.slice(0, 200)}
+                </span>
+              )}
+            </span>
+          </div>
+        )}
+
         {classifyStats && classifyStats.fallback > 0 && (
           <div
             className="flex items-start gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-danger-high"
@@ -332,7 +367,7 @@ function Workspace() {
               </strong>{' '}
               n'ont pas été classées par l'IA : repli sur les mots-clés, résultat peu fiable. À
               reclasser avant tout rapport de conformité.
-              {classifyStats.reason && (
+              {classifyStats.echecs === 0 && classifyStats.reason && (
                 <span className="block mt-1 font-mono text-[11.5px] text-ink-soft">
                   {classifyStats.reason.slice(0, 200)}
                 </span>
@@ -341,7 +376,7 @@ function Workspace() {
           </div>
         )}
 
-        {classifyStats && classifyStats.fallback === 0 && classifyStats.total > 0 && (
+        {classifyStats && classifyStats.fallback === 0 && classifyStats.echecs === 0 && classifyStats.total > 0 && (
           <div
             className="flex items-center gap-2 px-4 py-3 rounded-lg border border-line text-[13.5px] text-success"
             style={{ backgroundColor: 'color-mix(in oklch, var(--color-success) 10%, var(--color-surface))' }}
@@ -376,7 +411,7 @@ function Workspace() {
               label="Toutes"
               count={tickets.length}
               active={currentTab === ALL_TAB}
-              onClick={() => setActiveTab(ALL_TAB)}
+              onClick={() => selectTab(ALL_TAB)}
             />
             {groups.map(({ categorie, count }) => (
               <TabButton
@@ -385,7 +420,7 @@ function Workspace() {
                 count={count}
                 active={currentTab === categorie}
                 dotColor={categorie === UNCLASSIFIED_TAB ? undefined : categoryTagStyle(categorie).color}
-                onClick={() => setActiveTab(categorie)}
+                onClick={() => selectTab(categorie)}
               />
             ))}
           </div>
@@ -413,7 +448,7 @@ function Workspace() {
                   </td>
                 </tr>
               )}
-              {visibleTickets.map((t) => (
+              {pageTickets.map((t) => (
                 <tr key={t.id} className="border-t border-line-soft">
                   <td className="px-4 py-3 max-w-md truncate text-ink-soft" title={t.texte_brut}>
                     {t.texte_brut}
@@ -457,12 +492,34 @@ function Workspace() {
           </table>
         </div>
 
+        {pageCount > 1 && (
+          <nav className="flex items-center justify-end gap-3 text-[12.5px] text-ink-soft" aria-label="Pagination des réclamations">
+            <button
+              onClick={() => setPage(currentPage - 1)}
+              disabled={currentPage <= 1}
+              className="px-3 py-1.5 rounded-lg border border-line bg-surface font-medium disabled:opacity-50 hover:bg-elevated transition-colors"
+            >
+              Précédent
+            </button>
+            <span className="font-mono text-[11.5px] text-ink-faint">
+              Page {currentPage} / {pageCount}
+            </span>
+            <button
+              onClick={() => setPage(currentPage + 1)}
+              disabled={currentPage >= pageCount}
+              className="px-3 py-1.5 rounded-lg border border-line bg-surface font-medium disabled:opacity-50 hover:bg-elevated transition-colors"
+            >
+              Suivant
+            </button>
+          </nav>
+        )}
+
         {reportMarkdown && (
           <div className="border border-line-soft rounded-[10px] p-4 mt-3 bg-surface">
             <div className="flex items-center justify-between mb-2">
               <h2 className="font-semibold text-sm">Rapport de conformité</h2>
               <button
-                onClick={() => downloadText(reportMarkdown, 'racine_rapport_conformite.md', 'text/markdown;charset=utf-8')}
+                onClick={() => downloadText(reportMarkdown, 'sentinelle_rapport_conformite.md', 'text/markdown;charset=utf-8')}
                 className="inline-flex items-center gap-1.5 text-[13px] font-medium"
                 style={{ color: 'var(--color-success)' }}
               >
@@ -479,7 +536,7 @@ function Workspace() {
         onClose={() => setIsImportOpen(false)}
         onImport={(imported, fileName) => {
           importTickets(imported, fileName);
-          setActiveTab(ALL_TAB);
+          selectTab(ALL_TAB);
         }}
       />
     </div>
@@ -491,8 +548,58 @@ function Workspace() {
  * (VITE_SUPABASE_ANON_KEY absente), on sert directement le plan de travail : la demo locale
  * reste utilisable sans comptes, exactement comme avant l'ajout de cette couche.
  */
+/**
+ * L'organisation n'a pas pu être lue. On n'affiche surtout pas l'onboarding : il proposerait
+ * « Crée ton organisation » à un membre existant, sur une simple coupure réseau.
+ */
+function OrganisationUnavailable() {
+  const { organisationError, refreshOrganisation, signOut } = useAuth();
+  const [busy, setBusy] = useState(false);
+
+  const retry = async () => {
+    setBusy(true);
+    await refreshOrganisation();
+    setBusy(false);
+  };
+
+  return (
+    <div className="min-h-screen bg-base text-ink font-sans flex items-center justify-center px-6 py-12">
+      <div className="w-full max-w-sm">
+        <h1 className="text-[19px] font-semibold tracking-tight">Organisation indisponible</h1>
+        <p className="text-[13px] text-ink-soft mt-1 mb-5">
+          Ton compte est bien connecté, mais son organisation n'a pas pu être chargée.
+        </p>
+        <div
+          className="flex items-start gap-2 px-3.5 py-2.5 mb-5 rounded-lg border border-line text-[12.5px] text-danger-critical"
+          style={{ backgroundColor: 'color-mix(in oklch, var(--color-danger-critical) 10%, var(--color-surface))' }}
+        >
+          <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+          <span>{organisationError}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => void retry()}
+            disabled={busy}
+            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg text-[13px] font-semibold disabled:opacity-50 transition-colors"
+            style={{ backgroundColor: 'var(--color-accent)', color: 'var(--color-accent-ink)' }}
+          >
+            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
+            Réessayer
+          </button>
+          <button
+            onClick={() => void signOut()}
+            className="text-[12.5px] text-ink-soft underline underline-offset-2 hover:text-ink"
+          >
+            Se déconnecter
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
-  const { configured, loading, session, organisation, passwordRecovery } = useAuth();
+  const { configured, loading, session, organisation, organisationError, passwordRecovery } = useAuth();
 
   if (!configured) return <Workspace />;
 
@@ -505,6 +612,6 @@ export default function App() {
   }
 
   if (!session || passwordRecovery) return <AuthScreen />;
-  if (!organisation) return <OnboardingScreen />;
+  if (!organisation) return organisationError ? <OrganisationUnavailable /> : <OnboardingScreen />;
   return <Workspace />;
 }

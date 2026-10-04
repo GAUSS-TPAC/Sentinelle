@@ -147,3 +147,15 @@ npm run dev
 ```bash
 curl http://localhost:3001/api/health
 ```
+
+## Vérifications
+
+```bash
+npm run typecheck   # navigateur (src/) et serveur (server/, tests/)
+npm test            # tests unitaires des calculs : patterns, banc de modèles, import, parsing IA
+npm run build       # typecheck + build Vite — ce que lance l'hébergeur
+```
+
+Les tests couvrent le code de calcul pur, celui où une erreur ne se voit pas à l'écran : elle
+produit un nombre plausible et faux. La CI (`.github/workflows/ci.yml`) rejoue ces trois
+commandes à chaque push.

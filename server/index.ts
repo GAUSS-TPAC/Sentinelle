@@ -70,6 +70,9 @@ const verifiedTokens = new Map<string, number>();
  * Garde des routes qui ne touchent pas Supabase mais consomment le quota IA. Sans elle, le
  * service en ligne laisserait n'importe qui épuiser le palier gratuit Gemini sans compte.
  * Inactive en mode démo local (pas de clé anonyme), comme le reste de l'authentification.
+ *
+ * Une session valide ne suffit pas : l'inscription est libre, donc on exige aussi le
+ * rattachement à une organisation — le même contrôle que les routes de données.
  */
 async function requireSession(req: Request, res: Response, next: NextFunction) {
   if (!hasSupabaseAuth) return next();
@@ -83,9 +86,9 @@ async function requireSession(req: Request, res: Response, next: NextFunction) {
   const now = Date.now();
   if ((verifiedTokens.get(token) ?? 0) > now) return next();
 
-  const { data, error } = (await clientForAccessToken(token)?.auth.getUser(token)) ?? {};
-  if (error || !data?.user) {
-    res.status(401).json({ error: 'Session invalide ou expirée' });
+  const ws = await resolveWorkspace(req);
+  if (!ws.ok) {
+    res.status(ws.status).json({ error: ws.message });
     return;
   }
 
@@ -412,10 +415,12 @@ async function callGeminiRaw(
   userPrompt: string,
   signal: AbortSignal,
 ): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  // Clé en en-tête plutôt qu'en paramètre d'URL : une URL finit dans les journaux d'accès et
+  // les messages d'erreur, pas un en-tête.
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
   const response = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
@@ -506,17 +511,22 @@ async function callSelfHostedRaw(
   return text;
 }
 
+// Une réclamation tient en quelques lignes. Au-delà, on tronque : le début suffit à la classer,
+// et sans plafond un seul appel pouvait envoyer 2 Mo de texte au modèle.
+const MAX_TEXTE_CHARS = 8_000;
+
 app.post('/api/classify-ticket', requireSession, async (req, res) => {
-  const { texte_brut: texteBrut, provider, model: requestedModel } = req.body as {
+  const { texte_brut: texteRecu, provider, model: requestedModel } = req.body as {
     texte_brut?: string;
     provider?: string;
     model?: string;
   };
 
-  if (!texteBrut?.trim()) {
+  if (typeof texteRecu !== 'string' || !texteRecu.trim()) {
     res.status(400).json({ error: 'texte_brut is required' });
     return;
   }
+  const texteBrut = texteRecu.slice(0, MAX_TEXTE_CHARS);
 
   const forceProvider =
     provider === 'gemini' || provider === 'anthropic' || provider === 'openai' || provider === 'selfhosted'
@@ -697,7 +707,21 @@ async function resolveWorkspace(req: Request): Promise<Workspace> {
   if (!db) return { ok: false, status: 501, message: 'Supabase not configured' };
 
   const { data: userData, error: userError } = await db.auth.getUser(token);
-  if (userError || !userData.user) {
+  if (userError) {
+    // Ne pas confondre « Supabase a refusé ce jeton » (4xx) et « Supabase n'a pas répondu »
+    // (pas de statut, ou 5xx). Répondre 401 dans le second cas faisait passer une coupure
+    // réseau pour une session expirée, et le navigateur déconnectait l'utilisateur.
+    const status = (userError as { status?: number }).status;
+    if (!status || status >= 500) {
+      return {
+        ok: false,
+        status: 503,
+        message: "Service d'authentification momentanément injoignable — réessaie dans un instant.",
+      };
+    }
+    return { ok: false, status: 401, message: 'Session invalide ou expirée' };
+  }
+  if (!userData.user) {
     return { ok: false, status: 401, message: 'Session invalide ou expirée' };
   }
 
@@ -755,6 +779,44 @@ function toTicketRow(ticket: Ticket, organisationId: string | null): Record<stri
   return row;
 }
 
+/**
+ * Lit tout le portefeuille, page par page. PostgREST plafonne chaque réponse (1000 lignes par
+ * défaut sur Supabase) sans le signaler : un simple `select('*')` rendait un portefeuille
+ * tronqué, et la détection de patterns comme le rapport reposaient alors sur une partie des
+ * réclamations. On avance du nombre de lignes reçues plutôt que d'une taille supposée, pour
+ * rester juste quel que soit le plafond réglé sur le projet.
+ */
+async function fetchAllTickets(db: SupabaseClient): Promise<{ tickets: Ticket[]; error: string | null }> {
+  const tickets: Ticket[] = [];
+  for (;;) {
+    const { data, error } = await db
+      .from('tickets')
+      .select('*')
+      .order('date_creation', { ascending: false })
+      // Tri secondaire stable : sans lui, des lignes de même date peuvent changer de page
+      // entre deux requêtes et être lues deux fois ou jamais.
+      .order('id', { ascending: true })
+      .range(tickets.length, tickets.length + 999);
+    if (error) return { tickets, error: error.message };
+    if (!data || data.length === 0) return { tickets, error: null };
+    tickets.push(...(data as Ticket[]));
+  }
+}
+
+/**
+ * Fusionne un lot avec l'historique persisté de l'organisation, le lot ayant priorité. Sans
+ * persistance (ou en cas d'échec de lecture), on travaille sur le lot seul.
+ */
+async function withHistory(ws: Workspace, lot: Ticket[]): Promise<Ticket[]> {
+  if (!ws.ok) return lot;
+  const { tickets: persisted, error } = await fetchAllTickets(ws.db);
+  if (error) return lot;
+  const byId = new Map<string, Ticket>();
+  for (const t of persisted) byId.set(t.id, t);
+  for (const t of lot) byId.set(t.id, t);
+  return Array.from(byId.values());
+}
+
 app.get('/api/tickets', async (req, res) => {
   const ws = await resolveWorkspace(req);
   if (!ws.ok) {
@@ -762,15 +824,12 @@ app.get('/api/tickets', async (req, res) => {
     return;
   }
 
-  const { data, error } = await ws.db
-    .from('tickets')
-    .select('*')
-    .order('date_creation', { ascending: false });
+  const { tickets, error } = await fetchAllTickets(ws.db);
   if (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error });
     return;
   }
-  res.json({ tickets: data as Ticket[] });
+  res.json({ tickets });
 });
 
 app.post('/api/tickets', async (req, res) => {
@@ -810,21 +869,17 @@ app.post('/api/patterns', async (req, res) => {
   }
 
   const ws = await resolveWorkspace(req);
+  // Comptes actifs mais requête sans session valide : on ne calcule rien pour un anonyme.
+  if (!ws.ok && ws.status === 401) {
+    res.status(401).json({ error: ws.message });
+    return;
+  }
 
   // La détection de patterns n'exige pas Supabase : sans persistance, on analyse le lot reçu
   // et on répond quand même, plutôt que de bloquer la fonctionnalité principale.
-  let dataset: Ticket[] = tickets ?? [];
-  if (ws.ok) {
-    // Détection « dans le temps » : on fusionne le lot envoyé avec l'historique de
-    // l'organisation, pour repérer des patterns au-delà du seul lot en cours.
-    const { data, error } = await ws.db.from('tickets').select('*');
-    if (!error && data) {
-      const byId = new Map<string, Ticket>();
-      for (const t of data as Ticket[]) byId.set(t.id, t);
-      for (const t of dataset) byId.set(t.id, t);
-      dataset = Array.from(byId.values());
-    }
-  }
+  // Détection « dans le temps » : on fusionne le lot envoyé avec l'historique de
+  // l'organisation, pour repérer des patterns au-delà du seul lot en cours.
+  const dataset = await withHistory(ws, tickets ?? []);
 
   const patterns = detectPatterns(dataset);
 
@@ -866,16 +921,20 @@ app.get('/api/patterns', async (req, res) => {
   res.json({ patterns: data as DetectedPattern[] });
 });
 
-app.post('/api/generate-report', requireSession, (req, res) => {
-  const { tickets, patterns } = req.body as { tickets?: Ticket[]; patterns?: ReturnType<typeof detectPatterns> };
+app.post('/api/generate-report', requireSession, async (req, res) => {
+  const { tickets } = req.body as { tickets?: Ticket[] };
 
   if (!Array.isArray(tickets)) {
     res.status(400).json({ error: 'tickets array is required' });
     return;
   }
 
-  const resolvedPatterns = patterns ?? detectPatterns(tickets);
-  const report = buildComplianceReport(tickets, resolvedPatterns);
+  // Même périmètre que la détection de patterns : le lot reçu fusionné avec l'historique de
+  // l'organisation. Auparavant les patterns couvraient l'historique et les totaux le seul lot
+  // affiché — un même rapport juxtaposait deux populations différentes. Les patterns sont
+  // recalculés ici plutôt que repris du navigateur, pour porter exactement sur ces tickets.
+  const dataset = await withHistory(await resolveWorkspace(req), tickets);
+  const report = buildComplianceReport(dataset, detectPatterns(dataset));
   res.json({ report, markdown: complianceReportToMarkdown(report) });
 });
 

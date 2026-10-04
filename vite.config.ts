@@ -17,12 +17,6 @@ export default defineConfig(({ mode }) => {
       },
     },
     define: {
-      // Only expose explicitly client-prefixed keys — never leak GEMINI_API_KEY / OPENAI_API_KEY to the browser.
-      'import.meta.env.VITE_GEMINI_API_KEY': JSON.stringify(env.VITE_GEMINI_API_KEY ?? ''),
-      'import.meta.env.VITE_OPENAI_API_KEY': JSON.stringify(env.VITE_OPENAI_API_KEY ?? ''),
-      'import.meta.env.VITE_AI_PROVIDER': JSON.stringify(env.VITE_AI_PROVIDER ?? ''),
-      'import.meta.env.VITE_OPENAI_MODEL': JSON.stringify(env.VITE_OPENAI_MODEL ?? 'gpt-4o-mini'),
-      'import.meta.env.VITE_GEMINI_MODEL': JSON.stringify(env.VITE_GEMINI_MODEL ?? ''),
       // Supabase Auth tourne dans le navigateur : il lui faut l'URL du projet et la clé
       // *anonyme*, qui est publique par conception (c'est la RLS qui protège les données,
       // pas le secret de cette clé). On retombe sur les variables non préfixées pour éviter

@@ -1,12 +1,14 @@
 // Segmented control accessible (radiogroup ARIA, navigation clavier, curseur animé
-// par ressort) — sourcé sur 21st.dev (ddoemonn/segmented-control) et adapté aux
+// par transition CSS) — sourcé sur 21st.dev (ddoemonn/segmented-control) et adapté aux
 // tokens Sentinelle ("Institutional Slate" : --color-accent / --color-elevated / etc.).
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
-import { animate, motion, useMotionValue, useReducedMotion, useTransform } from 'motion/react';
+import { useCallback, useRef, useState, type ReactNode } from 'react';
 
-const CELL = { type: 'spring', stiffness: 520, damping: 34, mass: 0.45 } as const;
+// Le curseur et son masque glissent ensemble, en sens opposés. Une transition CSS suffit :
+// la bibliothèque d'animation chargée pour ce seul composant pesait plus que lui.
+// `motion-reduce` coupe le mouvement pour qui a demandé à le réduire.
+const SLIDE = 'transition-transform duration-200 ease-out motion-reduce:transition-none';
 const SEG = 'px-3.5 py-1.5 text-center text-[12.5px] font-medium leading-[18px] whitespace-nowrap';
 
 export type SegmentedOption = {
@@ -48,20 +50,6 @@ export function SegmentedControl({
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const emit = useRef(onValueChange);
   emit.current = onValueChange;
-
-  const reduced = useReducedMotion();
-  const pos = useMotionValue(index);
-  const thumbX = useTransform(pos, (v) => `${v * 100}%`);
-  const maskX = useTransform(pos, (v) => `${v * -100}%`);
-
-  useEffect(() => {
-    if (reduced) {
-      pos.set(index);
-      return;
-    }
-    const controls = animate(pos, index, CELL);
-    return () => controls.stop();
-  }, [index, reduced, pos]);
 
   const select = useCallback(
     (next: string) => {
@@ -128,13 +116,12 @@ export function SegmentedControl({
           </span>
         ))}
 
-        <motion.div
+        <div
           aria-hidden
-          className="pointer-events-none absolute inset-y-0 left-0 overflow-hidden rounded-[6px] bg-accent shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
-          style={{ width: `${100 / count}%`, x: thumbX }}
-          initial={false}
+          className={`pointer-events-none absolute inset-y-0 left-0 overflow-hidden rounded-[6px] bg-accent shadow-[0_1px_2px_rgba(0,0,0,0.4)] ${SLIDE}`}
+          style={{ width: `${100 / count}%`, transform: `translateX(${index * 100}%)` }}
         >
-          <motion.div className="absolute inset-0" style={{ x: maskX }} initial={false}>
+          <div className={`absolute inset-0 ${SLIDE}`} style={{ transform: `translateX(${index * -100}%)` }}>
             <div className="absolute inset-y-0 left-0 grid" style={{ width: `${count * 100}%`, gridTemplateColumns: template }}>
               {options.map((option) => (
                 <span key={option.value} className={`${SEG} inline-flex items-center justify-center gap-1.5`} style={{ color: 'var(--color-accent-ink)' }}>
@@ -142,8 +129,8 @@ export function SegmentedControl({
                 </span>
               ))}
             </div>
-          </motion.div>
-        </motion.div>
+          </div>
+        </div>
 
         <div className="absolute inset-0 grid" style={{ gridTemplateColumns: template }} onPointerLeave={() => setHovered(-1)}>
           {options.map((option, i) => (

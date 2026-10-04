@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAuth } from '@/auth/AuthProvider';
 import { apiFetch } from '@/lib/apiClient';
 import { fetchModelCatalog, type ModelInfo } from '@/lib/modelCatalog';
 import {
@@ -6,6 +7,7 @@ import {
   type BenchmarkAttempt,
   type ModelScore,
 } from '@/lib/modelBenchmark';
+import { createTicketIdFactory } from '@/lib/ticketId';
 import type { DetectedPattern, Ticket } from '@/lib/types';
 
 export type AIProviderChoice = 'gemini' | 'selfhosted';
@@ -19,7 +21,26 @@ type WorkingTicket = Ticket & { categorie_attendue?: string };
  * plausible : sans ce décompte, un rapport de conformité peut reposer sur du classement par
  * mots-clés sans que personne ne s'en aperçoive.
  */
-export type ClassifyStats = { total: number; fallback: number; reason: string | null };
+export type ClassifyStats = {
+  total: number;
+  /** Classées par mots-clés : l'IA n'a pas répondu, le serveur a rendu son repli. */
+  fallback: number;
+  /** Non classées du tout : l'appel lui-même a échoué (réseau, 4xx/5xx). */
+  echecs: number;
+  reason: string | null;
+};
+
+/** Taille des lots de persistance en cours de classification. */
+const PERSIST_CHUNK = 25;
+
+/** Message d'erreur d'une réponse non-2xx de l'API, quel que soit son corps. */
+async function errorDetail(res: Response): Promise<string> {
+  const detail = await res
+    .json()
+    .then((body: { error?: string }) => body.error)
+    .catch(() => null);
+  return detail ?? `HTTP ${res.status}`;
+}
 
 async function withConcurrency<T, R>(
   items: T[],
@@ -46,6 +67,8 @@ async function withConcurrency<T, R>(
 }
 
 export function useTicketWorkspace() {
+  const { organisation } = useAuth();
+  const organisationId = organisation?.id ?? '';
   const [tickets, setTickets] = useState<WorkingTicket[]>([]);
   const [patterns, setPatterns] = useState<DetectedPattern[]>([]);
   const [provider, setProvider] = useState<AIProviderChoice>('gemini');
@@ -116,8 +139,11 @@ export function useTicketWorkspace() {
       const text = await res.text();
       const parsed = Papa.parse<Record<string, string>>(text, { header: true, skipEmptyLines: true });
 
+      // Identifiants déterministes, comme pour un import : recharger l'échantillon ne doit
+      // pas dupliquer ses lignes dans le portefeuille persisté.
+      const nextId = createTicketIdFactory(organisationId);
       const loaded: WorkingTicket[] = parsed.data.map((row) => ({
-        id: crypto.randomUUID(),
+        id: nextId(row.texte_brut ?? '', row.date_creation ?? ''),
         texte_brut: row.texte_brut ?? '',
         categorie_causale: '',
         categorie_attendue: row.categorie_causale,
@@ -136,9 +162,8 @@ export function useTicketWorkspace() {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [organisationId]);
 
-  /** Remplace le portefeuille courant par un fichier importé (CSV / Excel / JSON). */
   /**
    * Remet le plan de travail à zéro, côté navigateur uniquement.
    *
@@ -157,6 +182,7 @@ export function useTicketWorkspace() {
     setClassifyProgress({ done: 0, total: 0 });
   }, []);
 
+  /** Remplace le portefeuille courant par un fichier importé (CSV / Excel / JSON). */
   const importTickets = useCallback((imported: WorkingTicket[], fileName: string) => {
     setTickets(imported);
     setPatterns([]);
@@ -199,6 +225,31 @@ export function useTicketWorkspace() {
     setClassifyProgress({ done: 0, total: tickets.length });
 
     const fallbackReasons: string[] = [];
+    let echecs = 0;
+    let premierEchec: string | null = null;
+
+    // Persistance au fil de l'eau. Sous le palier gratuit, 600 réclamations prennent une
+    // heure : n'écrire qu'à la fin faisait dépendre toute l'heure d'un onglet resté ouvert.
+    let enAttente: WorkingTicket[] = [];
+    let persistanceActive = true;
+    let erreurPersistance: string | null = null;
+
+    const persister = async () => {
+      if (!persistanceActive || enAttente.length === 0) return;
+      const lot = enAttente;
+      enAttente = [];
+      try {
+        const res = await apiFetch('/api/tickets', {
+          method: 'POST',
+          body: JSON.stringify({ tickets: lot }),
+        });
+        // 501 = Supabase non configuré : cas normal, l'appli reste utilisable 100% en mémoire.
+        if (res.status === 501) persistanceActive = false;
+        else if (!res.ok) erreurPersistance ??= await errorDetail(res);
+      } catch (err) {
+        erreurPersistance ??= err instanceof Error ? err.message : 'réseau indisponible';
+      }
+    };
 
     try {
       const classified = await withConcurrency(
@@ -209,57 +260,65 @@ export function useTicketWorkspace() {
         // rapprocher chaque requête de son délai d'expiration.
         2,
         async (ticket) => {
-          const res = await apiFetch('/api/classify-ticket', {
-            method: 'POST',
-            body: JSON.stringify({
-              texte_brut: ticket.texte_brut,
-              provider,
-              ...(selectedModel ? { model: selectedModel.model } : {}),
-            }),
-          });
-          const data = (await res.json()) as {
-            categorie_causale: string;
-            sous_categorie: string;
-            confiance: number;
-            provider: string;
-            source?: 'ai' | 'fallback';
-            error?: string;
-          };
-          if (data.source === 'fallback' && data.error) fallbackReasons.push(data.error);
-          return { ...ticket, ...data, provider_utilise: data.provider } as WorkingTicket;
+          // Un échec ne doit coûter que sa réclamation : laisser l'erreur remonter abandonnait
+          // tout le lot, y compris les centaines de réponses déjà obtenues.
+          try {
+            const res = await apiFetch('/api/classify-ticket', {
+              method: 'POST',
+              body: JSON.stringify({
+                texte_brut: ticket.texte_brut,
+                provider,
+                ...(selectedModel ? { model: selectedModel.model } : {}),
+              }),
+            });
+            // Une réponse d'erreur n'est pas un classement : la fusionner dans le ticket le
+            // laissait sans catégorie tout en le comptant parmi les réussites.
+            if (!res.ok) throw new Error(await errorDetail(res));
+
+            const data = (await res.json()) as {
+              categorie_causale: string;
+              sous_categorie: string;
+              confiance: number;
+              provider: string;
+              source?: 'ai' | 'fallback';
+              error?: string;
+            };
+            if (data.source === 'fallback' && data.error) fallbackReasons.push(data.error);
+
+            const classe = { ...ticket, ...data, provider_utilise: data.provider } as WorkingTicket;
+            setTickets((courants) => courants.map((t) => (t.id === classe.id ? classe : t)));
+            enAttente.push(classe);
+            if (enAttente.length >= PERSIST_CHUNK) await persister();
+            return classe;
+          } catch (err) {
+            echecs += 1;
+            premierEchec ??= err instanceof Error ? err.message : 'Appel de classification en échec';
+            return ticket;
+          }
         },
         (done, total) => setClassifyProgress({ done, total }),
       );
 
+      await persister();
       setTickets(classified);
       setClassifyStats({
         total: classified.length,
         fallback: classified.filter((t) => t.provider_utilise === 'heuristic').length,
-        reason: fallbackReasons[0] ?? null,
+        echecs,
+        reason: premierEchec ?? fallbackReasons[0] ?? null,
       });
 
-      // Persistance Supabase : awaitée avant la détection de patterns, qui relit l'historique
-      // persisté côté serveur pour croiser les lots — sans await, le lot courant pouvait
-      // manquer à l'appel. Si Supabase n'est pas configuré, l'API répond 501 : cas normal,
-      // l'appli reste utilisable 100% en mémoire. Tout autre échec est signalé plutôt
-      // qu'avalé (la classification, elle, reste affichée).
-      const persistRes = await apiFetch('/api/tickets', {
-        method: 'POST',
-        body: JSON.stringify({ tickets: classified }),
-      }).catch(() => null);
-
-      if (persistRes && !persistRes.ok && persistRes.status !== 501) {
-        const detail = await persistRes
-          .json()
-          .then((body: { error?: string }) => body.error)
-          .catch(() => null);
-        setError(`Classification terminée, mais la persistance a échoué : ${detail ?? `HTTP ${persistRes.status}`}`);
+      if (erreurPersistance) {
+        setError(`Classification terminée, mais la persistance a échoué : ${erreurPersistance}`);
       }
 
+      // La détection relit l'historique persisté côté serveur pour croiser les lots : elle
+      // vient donc après la dernière écriture.
       const patternsRes = await apiFetch('/api/patterns', {
         method: 'POST',
         body: JSON.stringify({ tickets: classified }),
       });
+      if (!patternsRes.ok) throw new Error(`Détection de patterns en échec : ${await errorDetail(patternsRes)}`);
       const { patterns: detected } = (await patternsRes.json()) as { patterns: DetectedPattern[] };
       setPatterns(detected);
     } catch (err) {
@@ -336,6 +395,7 @@ export function useTicketWorkspace() {
                     model: m.model,
                   }),
                 });
+                if (!res.ok) throw new Error(await errorDetail(res));
                 const data = (await res.json()) as {
                   categorie_causale?: string;
                   confiance?: number;
@@ -349,7 +409,7 @@ export function useTicketWorkspace() {
                   latenceMs: performance.now() - debut,
                 });
               } catch {
-                // Échec réseau : compté comme une non-réponse du modèle, pas ignoré.
+                // Échec réseau ou réponse d'erreur : compté comme une non-réponse du modèle, pas ignoré.
                 attempts.push({
                   obtenue: '',
                   attendue: ticket.categorie_attendue ?? '',
@@ -381,8 +441,9 @@ export function useTicketWorkspace() {
     try {
       const res = await apiFetch('/api/generate-report', {
         method: 'POST',
-        body: JSON.stringify({ tickets, patterns }),
+        body: JSON.stringify({ tickets }),
       });
+      if (!res.ok) throw new Error(`Rapport non généré : ${await errorDetail(res)}`);
       const { markdown } = (await res.json()) as { markdown: string };
       setReportMarkdown(markdown);
     } catch (err) {
@@ -390,7 +451,7 @@ export function useTicketWorkspace() {
     } finally {
       setIsGeneratingReport(false);
     }
-  }, [tickets, patterns]);
+  }, [tickets]);
 
   const accuracy = useMemo(() => {
     const withExpected = tickets.filter((t) => t.categorie_attendue && t.categorie_causale);

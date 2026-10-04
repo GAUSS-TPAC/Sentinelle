@@ -9,7 +9,7 @@ export const EXPORT_FORMATS: { value: ExportFormat; label: string; extension: st
 
 export function exportBaseName(fileName: string): string {
   const stripped = fileName.replace(/\.[^.]+$/, '').trim();
-  return stripped || 'racine_export';
+  return stripped || 'sentinelle_export';
 }
 
 export async function rowsToCSV(rows: DataRow[]): Promise<string> {

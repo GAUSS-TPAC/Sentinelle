@@ -39,8 +39,8 @@ create table if not exists patterns_detectes (
 create index if not exists idx_patterns_date on patterns_detectes (date_detection);
 create index if not exists idx_patterns_type on patterns_detectes (type);
 
--- RLS activée avec accès total réservé au backend (service_role bypass RLS par défaut).
--- Aucune clé anon/publique n'est utilisée côté client dans ce projet — l'API passe
--- toujours par server/index.ts avec la service_role key.
+-- RLS activée sans aucune policy à ce stade : seul le backend (service_role, qui contourne
+-- la RLS) accède aux données. Les policies par organisation arrivent avec
+-- 002_organisations.sql, qui ouvre l'accès aux comptes connectés.
 alter table tickets enable row level security;
 alter table patterns_detectes enable row level security;

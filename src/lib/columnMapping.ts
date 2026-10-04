@@ -1,5 +1,6 @@
 import type { DataRow, Ticket } from './types';
 import { TICKET_STATUSES, type TicketStatus } from './taxonomy';
+import { createTicketIdFactory } from './ticketId';
 
 /**
  * Champs d'un ticket qu'un fichier importé peut alimenter. `categorie_attendue` n'est pas
@@ -193,8 +194,13 @@ export type BuiltTickets = {
   skipped: number;
 };
 
-export function buildTicketsFromRows(rows: DataRow[], mapping: ColumnMapping): BuiltTickets {
+/**
+ * `scope` est l'identifiant de l'organisation (vide en mode démo sans comptes) : il entre dans
+ * l'identifiant des tickets, voir `ticketId.ts`.
+ */
+export function buildTicketsFromRows(rows: DataRow[], mapping: ColumnMapping, scope = ''): BuiltTickets {
   const today = new Date().toISOString().slice(0, 10);
+  const nextId = createTicketIdFactory(scope);
   const tickets: (Ticket & { categorie_attendue?: string })[] = [];
   let skipped = 0;
 
@@ -213,12 +219,15 @@ export function buildTicketsFromRows(rows: DataRow[], mapping: ColumnMapping): B
     }
 
     const attendue = read('categorie_attendue');
+    // L'identifiant s'appuie sur la date lue dans le fichier, pas sur la date du jour
+    // substituée : sinon un fichier sans colonne de date changerait d'identifiants chaque jour.
+    const dateLue = parseDate(read('date_creation'));
     tickets.push({
-      id: crypto.randomUUID(),
+      id: nextId(texte, dateLue ?? ''),
       texte_brut: texte,
       categorie_causale: '',
       sous_categorie: '',
-      date_creation: parseDate(read('date_creation')) ?? today,
+      date_creation: dateLue ?? today,
       statut: mapping.statut ? parseStatus(read('statut')) : 'nouveau',
       delai_reponse_jours: mapping.delai_reponse_jours ? parseDays(read('delai_reponse_jours')) : null,
       ...(attendue ? { categorie_attendue: attendue } : {}),

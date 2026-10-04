@@ -9,6 +9,7 @@ import {
 } from '@/lib/columnMapping';
 import { ACCEPTED_FILE_TYPES, readSpreadsheet, type ParsedSheet } from '@/lib/spreadsheet';
 import type { Ticket } from '@/lib/types';
+import { useAuth } from '@/auth/AuthProvider';
 
 type ImportedTicket = Ticket & { categorie_attendue?: string };
 
@@ -23,6 +24,7 @@ const SELECT_CLASS =
   'w-full px-2.5 py-2 rounded-lg border border-line bg-elevated text-ink text-[12.5px] outline-none focus-visible:border-accent';
 
 export function ImportDialog({ open, onClose, onImport }: ImportDialogProps) {
+  const { organisation } = useAuth();
   const [sheet, setSheet] = useState<ParsedSheet | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [mapping, setMapping] = useState<ColumnMapping | null>(null);
@@ -73,7 +75,7 @@ export function ImportDialog({ open, onClose, onImport }: ImportDialogProps) {
 
   if (!open) return null;
 
-  const preview = sheet && mapping ? buildTicketsFromRows(sheet.rows, mapping) : null;
+  const preview = sheet && mapping ? buildTicketsFromRows(sheet.rows, mapping, organisation?.id ?? '') : null;
   const canImport = Boolean(mapping?.texte_brut) && (preview?.tickets.length ?? 0) > 0;
 
   return (

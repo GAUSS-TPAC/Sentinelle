@@ -1,3 +1,4 @@
+import { isAuthRetryableFetchError } from '@supabase/supabase-js';
 import { supabaseBrowser } from './supabaseBrowser';
 
 /**
@@ -23,9 +24,13 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   // Le serveur refuse un jeton que le navigateur croyait valide (session révoquée, horloge
   // décalée). On tente un rafraîchissement ; s'il échoue, on ferme la session locale pour
   // renvoyer vers l'écran de connexion plutôt que de laisser tout échouer en silence.
-  const { data: refreshed } = await supabaseBrowser.auth.refreshSession();
+  const { data: refreshed, error: refreshError } = await supabaseBrowser.auth.refreshSession();
   const renewed = refreshed.session?.access_token;
   if (!renewed) {
+    // Rafraîchissement impossible faute de réseau : la session n'est pas invalide, elle est
+    // injoignable. On la garde — la fermer renverrait à l'écran de connexion sur une simple
+    // coupure, en perdant le travail en cours.
+    if (refreshError && isAuthRetryableFetchError(refreshError)) return res;
     await supabaseBrowser.auth.signOut({ scope: 'local' });
     return res;
   }

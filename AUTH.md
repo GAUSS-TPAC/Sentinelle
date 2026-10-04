@@ -31,6 +31,12 @@ Elle crée `organisations`, `membres`, `invitations`, rattache `tickets` et
 regénérées au prochain classement. Si tu tiens à les garder, crée d'abord ton organisation,
 puis affecte son `id` aux lignes existantes avant de lancer la migration.
 
+Exécute ensuite, dans l'ordre, [`supabase/003_creation_organisation.sql`](supabase/003_creation_organisation.sql)
+puis [`supabase/004_acceptation_invitation.sql`](supabase/004_acceptation_invitation.sql).
+Elles font passer la création d'organisation et l'acceptation d'invitation par deux
+fonctions SQL : plus aucun compte n'écrit directement dans `membres`, donc personne ne peut
+s'attribuer un rôle. Sans la 004, un invité « membre » pouvait s'inscrire comme propriétaire.
+
 Elle change aussi la clé primaire de `patterns_detectes` en `(organisation_id, id)` :
 l'identifiant de pattern est déterministe (`pattern-cobac-delai`), donc identique d'une
 banque à l'autre. Sans cette clé composite, deux banques écraseraient mutuellement leurs

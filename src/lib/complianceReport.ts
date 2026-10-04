@@ -15,6 +15,9 @@ export type ComplianceReport = {
   avertissement: string;
 };
 
+/** Libellé des réclamations sans catégorie : une clé vide donnerait une ligne sans nom dans le rapport. */
+const NON_CLASSEE = 'Non classée';
+
 function extentDates(tickets: Ticket[]): { debut: string | null; fin: string | null } {
   if (tickets.length === 0) return { debut: null, fin: null };
   const dates = tickets.map((t) => t.date_creation).sort();
@@ -24,7 +27,8 @@ function extentDates(tickets: Ticket[]): { debut: string | null; fin: string | n
 export function buildComplianceReport(tickets: Ticket[], patterns: DetectedPattern[]): ComplianceReport {
   const repartitionParCategorie: Record<string, number> = {};
   for (const t of tickets) {
-    repartitionParCategorie[t.categorie_causale] = (repartitionParCategorie[t.categorie_causale] ?? 0) + 1;
+    const categorie = t.categorie_causale || NON_CLASSEE;
+    repartitionParCategorie[categorie] = (repartitionParCategorie[categorie] ?? 0) + 1;
   }
 
   const ticketsEnRetard = tickets.filter(

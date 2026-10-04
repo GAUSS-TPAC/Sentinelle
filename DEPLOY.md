@@ -28,24 +28,20 @@ git push origin master
 `.gitignore` couvre `.env` et `.env.*` (avec une exception pour `.env.example`). Si tu ajoutes
 un fichier de secrets sous un autre nom, ajoute-le avant de faire `git add -A`.
 
-### A2. `tsx` au démarrage — piège classique
+### A2. `tsx` au démarrage
 
-`npm start` lance `tsx server/index.ts`, or `tsx` et `typescript` sont dans
-`devDependencies`. Si l'hébergeur élague les devDependencies après le build (fréquent quand
-`NODE_ENV=production` est posé à l'installation), le service démarre sur `tsx: not found`.
-
-Deux parades :
-
-- poser `NPM_CONFIG_PRODUCTION=false` dans les variables de l'hébergeur, ou
-- déplacer la dépendance : `npm i tsx --save-prod` (plus robuste, recommandé).
+`npm start` lance `tsx server/index.ts`. `tsx` est en dépendance de production : il reste
+installé même si l'hébergeur élague les devDependencies après le build.
 
 ### A3. Vérifier le build localement
 
 ```bash
+npm test
 npm run build
 ```
 
-C'est exactement la commande que lancera l'hébergeur (`tsc --noEmit` puis `vite build`).
+`npm run build` est exactement la commande que lancera l'hébergeur : contrôle des types du
+navigateur **et** du serveur, puis `vite build`.
 Un échec ici est un échec de déploiement garanti.
 
 ---
@@ -59,6 +55,11 @@ Supabase → **SQL Editor** → **New query** → coller → **Run**, une par un
 1. `supabase/schema.sql`
 2. `supabase/002_organisations.sql`
 3. `supabase/003_creation_organisation.sql`
+4. `supabase/004_acceptation_invitation.sql`
+
+La 004 n'est pas facultative : sans elle, un compte invité peut choisir lui-même son rôle
+dans l'organisation, et l'acceptation d'invitation de l'interface échoue (elle appelle la
+fonction que cette migration crée).
 
 ⚠️ `002_organisations.sql` **supprime les lignes sans organisation** de `tickets` et
 `patterns_detectes` — voir [AUTH.md](AUTH.md#1-exécuter-la-migration). Sans conséquence sur
@@ -124,7 +125,6 @@ décrit en C2. Le seul verdict fiable est `/api/health` (phase D).
 | `VITE_SUPABASE_URL` | identique à `SUPABASE_URL` |
 | `VITE_SUPABASE_ANON_KEY` | identique à `SUPABASE_ANON_KEY` |
 | `GEMINI_RPM` | `10` — facultatif, voir ci-dessous |
-| `NPM_CONFIG_PRODUCTION` | `false` — sauf si `tsx` a été déplacé en dépendance de production (A2) |
 
 ⚠️ **Ne jamais poser `API_PORT` ni `PORT`.** Railway injecte `PORT` lui-même, et le serveur
 le lit déjà en repli. Le piège vient de la ligne de résolution :
@@ -225,7 +225,7 @@ Identique dans les grandes lignes :
 
 **Le sélecteur « Auto-hébergé · Ollama »** reste visible dans l'interface déployée mais est
 inopérant : côté serveur, `SELF_HOSTED_BASE_URL` pointe sur `localhost:11434`, où il n'y a
-rien. Chaque clic coûte 90 s d'attente (le délai d'expiration selfhosted) avant de retomber
+rien. Chaque réclamation échoue alors aussitôt (connexion refusée) et retombe
 sur le classement heuristique. À masquer quand `AI_PROVIDER !== 'selfhosted'`, ou à ne pas
 toucher pendant les démos publiques.
 
