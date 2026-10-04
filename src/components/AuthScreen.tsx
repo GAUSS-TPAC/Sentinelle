@@ -29,22 +29,37 @@ const OAUTH_BUTTON =
   'flex items-center justify-center gap-2.5 w-full px-4 py-2.5 rounded-lg border border-line bg-surface text-ink text-[13px] font-medium hover:bg-elevated transition-colors disabled:opacity-50';
 
 export function AuthScreen() {
-  const { signInWithPassword, signUpWithPassword, signInWithOAuth } = useAuth();
-  const [mode, setMode] = useState<'connexion' | 'inscription'>('connexion');
+  const {
+    signInWithPassword, signUpWithPassword, signInWithOAuth, requestPasswordReset,
+    updatePassword, passwordRecovery, error: authError, clearError,
+  } = useAuth();
+  const [chosenMode, setMode] = useState<'connexion' | 'inscription' | 'oubli'>('connexion');
+  // Le retour d'un lien de réinitialisation impose le choix d'un nouveau mot de passe.
+  const mode = passwordRecovery ? 'nouveau' : chosenMode;
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setError] = useState<string | null>(null);
+  // `authError` porte ce que Supabase a renvoyé dans l'URL (échec OAuth, lien expiré).
+  const error = localError ?? authError;
   const [notice, setNotice] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    clearError();
     setNotice(null);
     setBusy('email');
     try {
       if (mode === 'connexion') {
         await signInWithPassword(email.trim(), password);
+      } else if (mode === 'oubli') {
+        await requestPasswordReset(email.trim());
+        setNotice(
+          `Si un compte existe pour ${email.trim()}, un lien de réinitialisation vient d'y être envoyé.`,
+        );
+      } else if (mode === 'nouveau') {
+        await updatePassword(password);
       } else {
         const { needsConfirmation } = await signUpWithPassword(email.trim(), password);
         if (needsConfirmation) {
@@ -62,6 +77,7 @@ export function AuthScreen() {
 
   const oauth = async (provider: 'google' | 'azure') => {
     setError(null);
+    clearError();
     setBusy(provider);
     try {
       await signInWithOAuth(provider);
@@ -70,6 +86,31 @@ export function AuthScreen() {
       setBusy(null);
     }
   };
+
+  const withPassword = mode !== 'oubli';
+  const withProviders = mode === 'connexion' || mode === 'inscription';
+  const copy = {
+    connexion: {
+      title: 'Connexion',
+      intro: 'Accède au portefeuille de réclamations de ton établissement.',
+      action: 'Se connecter',
+    },
+    inscription: {
+      title: 'Créer un compte',
+      intro: "Crée ton compte, puis ton organisation — ou rejoins celle qui t'a invité.",
+      action: 'Créer le compte',
+    },
+    oubli: {
+      title: 'Mot de passe oublié',
+      intro: 'Indique ton adresse : tu recevras un lien pour choisir un nouveau mot de passe.',
+      action: 'Envoyer le lien',
+    },
+    nouveau: {
+      title: 'Nouveau mot de passe',
+      intro: 'Choisis le mot de passe qui remplacera l’ancien.',
+      action: 'Enregistrer le mot de passe',
+    },
+  }[mode];
 
   return (
     <div className="min-h-screen bg-base text-ink font-sans flex items-center justify-center px-6 py-12">
@@ -84,14 +125,8 @@ export function AuthScreen() {
           </div>
         </div>
 
-        <h1 className="text-[19px] font-semibold tracking-tight">
-          {mode === 'connexion' ? 'Connexion' : 'Créer un compte'}
-        </h1>
-        <p className="text-[13px] text-ink-soft mt-1 mb-6">
-          {mode === 'connexion'
-            ? 'Accède au portefeuille de réclamations de ton établissement.'
-            : "Crée ton compte, puis ton organisation — ou rejoins celle qui t'a invité."}
-        </p>
+        <h1 className="text-[19px] font-semibold tracking-tight">{copy.title}</h1>
+        <p className="text-[13px] text-ink-soft mt-1 mb-6">{copy.intro}</p>
 
         {error && (
           <div
@@ -116,6 +151,8 @@ export function AuthScreen() {
           </div>
         )}
 
+        {withProviders && (
+        <>
         <div className="flex flex-col gap-2.5">
           <button className={OAUTH_BUTTON} disabled={busy !== null} onClick={() => void oauth('google')}>
             {busy === 'google' ? <Loader2 className="w-4 h-4 animate-spin" /> : <GoogleMark />}
@@ -132,8 +169,11 @@ export function AuthScreen() {
           <span className="font-mono text-[10.5px] uppercase tracking-wide text-ink-faint">ou</span>
           <span className="h-px flex-1 bg-line-soft" />
         </div>
+        </>
+        )}
 
         <form onSubmit={submit} className="flex flex-col gap-3">
+          {mode !== 'nouveau' && (
           <label className="flex flex-col gap-1.5">
             <span className="text-[12.5px] font-medium text-ink">Adresse e-mail</span>
             <input
@@ -146,9 +186,27 @@ export function AuthScreen() {
               placeholder="prenom.nom@banque.cm"
             />
           </label>
+          )}
 
+          {withPassword && (
           <label className="flex flex-col gap-1.5">
-            <span className="text-[12.5px] font-medium text-ink">Mot de passe</span>
+            <span className="flex items-baseline justify-between text-[12.5px] font-medium text-ink">
+              {mode === 'nouveau' ? 'Nouveau mot de passe' : 'Mot de passe'}
+              {mode === 'connexion' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMode('oubli');
+                    setError(null);
+                    clearError();
+                    setNotice(null);
+                  }}
+                  className="font-normal text-ink-soft underline underline-offset-2 hover:text-ink"
+                >
+                  Mot de passe oublié ?
+                </button>
+              )}
+            </span>
             <input
               type="password"
               required
@@ -160,6 +218,7 @@ export function AuthScreen() {
               placeholder="6 caractères minimum"
             />
           </label>
+          )}
 
           <button
             type="submit"
@@ -168,16 +227,18 @@ export function AuthScreen() {
             style={{ backgroundColor: 'var(--color-accent)', color: 'var(--color-accent-ink)' }}
           >
             {busy === 'email' && <Loader2 className="w-4 h-4 animate-spin" />}
-            {mode === 'connexion' ? 'Se connecter' : 'Créer le compte'}
+            {copy.action}
           </button>
         </form>
 
+        {mode !== 'nouveau' && (
         <p className="text-[12.5px] text-ink-soft mt-5 text-center">
           {mode === 'connexion' ? 'Pas encore de compte ?' : 'Déjà un compte ?'}{' '}
           <button
             onClick={() => {
               setMode(mode === 'connexion' ? 'inscription' : 'connexion');
               setError(null);
+              clearError();
               setNotice(null);
             }}
             className="font-medium underline underline-offset-2"
@@ -186,6 +247,7 @@ export function AuthScreen() {
             {mode === 'connexion' ? 'Créer un compte' : 'Se connecter'}
           </button>
         </p>
+        )}
       </div>
     </div>
   );

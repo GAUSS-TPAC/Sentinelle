@@ -7,11 +7,14 @@ const PAYS_CEMAC = [
 ];
 
 export function OnboardingScreen() {
-  const { email, invitations, createOrganisation, acceptInvitation, signOut } = useAuth();
+  const {
+    email, invitations, createOrganisation, acceptInvitation, signOut, error: authError,
+  } = useAuth();
   const [nom, setNom] = useState('');
   const [pays, setPays] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [localError, setError] = useState<string | null>(null);
+  const error = localError ?? authError;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();

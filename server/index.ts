@@ -1,4 +1,4 @@
-import express, { type Request } from 'express';
+import express, { type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import 'dotenv/config';
 import path from 'node:path';
@@ -54,6 +54,47 @@ const SELF_HOSTED_MODEL = process.env.SELF_HOSTED_MODEL ?? 'gemma3:1b';
 
 app.use(cors());
 app.use(express.json({ limit: '2mb' }));
+
+function bearerToken(req: Request): string {
+  const header = req.header('authorization') ?? '';
+  return header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+}
+
+// Jetons déjà validés auprès de Supabase, avec leur échéance de cache. Un lot de 600
+// réclamations appelle /api/classify-ticket 600 fois : sans ce cache, chaque appel coûterait
+// un aller-retour `getUser`.
+const SESSION_CACHE_MS = 60_000;
+const verifiedTokens = new Map<string, number>();
+
+/**
+ * Garde des routes qui ne touchent pas Supabase mais consomment le quota IA. Sans elle, le
+ * service en ligne laisserait n'importe qui épuiser le palier gratuit Gemini sans compte.
+ * Inactive en mode démo local (pas de clé anonyme), comme le reste de l'authentification.
+ */
+async function requireSession(req: Request, res: Response, next: NextFunction) {
+  if (!hasSupabaseAuth) return next();
+
+  const token = bearerToken(req);
+  if (!token) {
+    res.status(401).json({ error: 'Authentification requise' });
+    return;
+  }
+
+  const now = Date.now();
+  if ((verifiedTokens.get(token) ?? 0) > now) return next();
+
+  const { data, error } = (await clientForAccessToken(token)?.auth.getUser(token)) ?? {};
+  if (error || !data?.user) {
+    res.status(401).json({ error: 'Session invalide ou expirée' });
+    return;
+  }
+
+  if (verifiedTokens.size > 500) {
+    for (const [key, expiry] of verifiedTokens) if (expiry <= now) verifiedTokens.delete(key);
+  }
+  verifiedTokens.set(token, now + SESSION_CACHE_MS);
+  next();
+}
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -465,7 +506,7 @@ async function callSelfHostedRaw(
   return text;
 }
 
-app.post('/api/classify-ticket', async (req, res) => {
+app.post('/api/classify-ticket', requireSession, async (req, res) => {
   const { texte_brut: texteBrut, provider, model: requestedModel } = req.body as {
     texte_brut?: string;
     provider?: string;
@@ -555,7 +596,7 @@ export type ModelInfo = {
   avertissement?: string;
 };
 
-app.get('/api/models', async (_req, res) => {
+app.get('/api/models', requireSession, async (_req, res) => {
   const models: ModelInfo[] = [];
 
   for (const model of GEMINI_MODELS) {
@@ -642,8 +683,7 @@ type Workspace =
   | { ok: false; status: number; message: string };
 
 async function resolveWorkspace(req: Request): Promise<Workspace> {
-  const header = req.header('authorization') ?? '';
-  const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+  const token = bearerToken(req);
 
   if (!token) {
     if (hasSupabaseAuth) {
@@ -826,7 +866,7 @@ app.get('/api/patterns', async (req, res) => {
   res.json({ patterns: data as DetectedPattern[] });
 });
 
-app.post('/api/generate-report', (req, res) => {
+app.post('/api/generate-report', requireSession, (req, res) => {
   const { tickets, patterns } = req.body as { tickets?: Ticket[]; patterns?: ReturnType<typeof detectPatterns> };
 
   if (!Array.isArray(tickets)) {

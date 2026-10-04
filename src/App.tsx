@@ -492,7 +492,7 @@ function Workspace() {
  * reste utilisable sans comptes, exactement comme avant l'ajout de cette couche.
  */
 export default function App() {
-  const { configured, loading, session, organisation } = useAuth();
+  const { configured, loading, session, organisation, passwordRecovery } = useAuth();
 
   if (!configured) return <Workspace />;
 
@@ -504,7 +504,7 @@ export default function App() {
     );
   }
 
-  if (!session) return <AuthScreen />;
+  if (!session || passwordRecovery) return <AuthScreen />;
   if (!organisation) return <OnboardingScreen />;
   return <Workspace />;
 }

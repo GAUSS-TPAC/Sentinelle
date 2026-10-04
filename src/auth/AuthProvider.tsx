@@ -28,9 +28,13 @@ export type AuthState = {
   organisation: Organisation | null;
   invitations: PendingInvitation[];
   error: string | null;
+  /** Vrai après un clic sur le lien « mot de passe oublié » : il reste à en choisir un nouveau. */
+  passwordRecovery: boolean;
   signInWithPassword: (email: string, password: string) => Promise<void>;
   signUpWithPassword: (email: string, password: string) => Promise<{ needsConfirmation: boolean }>;
   signInWithOAuth: (provider: 'google' | 'azure') => Promise<void>;
+  requestPasswordReset: (email: string) => Promise<void>;
+  updatePassword: (password: string) => Promise<void>;
   signOut: () => Promise<void>;
   createOrganisation: (nom: string, pays: string) => Promise<void>;
   acceptInvitation: (invitation: PendingInvitation) => Promise<void>;
@@ -49,20 +53,49 @@ function frenchify(message: string): string {
     'Password should be at least 6 characters':
       'Le mot de passe doit faire au moins 6 caractères.',
     'Unable to validate email address: invalid format': "Format d'adresse e-mail invalide.",
+    'New password should be different from the old password.':
+      "Le nouveau mot de passe doit être différent de l'ancien.",
+    'Email link is invalid or has expired': 'Lien invalide ou expiré — redemande-en un.',
     'Could not find the function public.creer_organisation(p_nom, p_pays) in the schema cache':
       'Schéma incomplet : exécute supabase/003_creation_organisation.sql dans Supabase.',
   };
   return map[message] ?? message;
 }
 
+/**
+ * Lit ce que Supabase a laissé dans l'URL de retour, avant que le client ne la nettoie :
+ * un échec OAuth ou un lien expiré revient en `error_description`, un lien de
+ * réinitialisation en `type=recovery`. Sans cette lecture, un retour en erreur réaffiche
+ * l'écran de connexion sans un mot.
+ */
+function readAuthReturn(): { error: string | null; recovery: boolean } {
+  if (typeof window === 'undefined') return { error: null, recovery: false };
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  const query = new URLSearchParams(window.location.search);
+  const description = hash.get('error_description') ?? query.get('error_description');
+  return {
+    error: description ? frenchify(description) : null,
+    recovery: hash.get('type') === 'recovery',
+  };
+}
+
+const authReturn = readAuthReturn();
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [organisation, setOrganisation] = useState<Organisation | null>(null);
   const [invitations, setInvitations] = useState<PendingInvitation[]>([]);
-  const [loading, setLoading] = useState(authConfigured);
-  const [error, setError] = useState<string | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(authConfigured);
+  // Compte pour lequel l'organisation a déjà été résolue. Tant qu'il diffère du compte
+  // connecté, on ne sait pas encore s'il faut l'onboarding : l'afficher trop tôt montrerait
+  // « Crée ton organisation » à un membre existant, qui pourrait en créer une seconde.
+  const [resolvedFor, setResolvedFor] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(authReturn.error);
+  const [passwordRecovery, setPasswordRecovery] = useState(authReturn.recovery);
 
   const email = session?.user.email ?? null;
+  const userId = session?.user.id ?? null;
+  const loading = sessionLoading || (userId !== null && resolvedFor !== userId);
 
   // Session : état initial + abonnement aux changements (connexion, déconnexion, retour
   // OAuth, rafraîchissement du jeton).
@@ -73,14 +106,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     void supabaseBrowser.auth.getSession().then(({ data }) => {
       if (!active) return;
       setSession(data.session);
-      setLoading(false);
+      setSessionLoading(false);
     });
 
-    const { data: sub } = supabaseBrowser.auth.onAuthStateChange((_event, next) => {
+    const { data: sub } = supabaseBrowser.auth.onAuthStateChange((event, next) => {
       setSession(next);
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true);
       if (!next) {
         setOrganisation(null);
         setInvitations([]);
+        setResolvedFor(null);
+        setPasswordRecovery(false);
       }
     });
 
@@ -92,18 +128,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   /** Résout l'organisation du compte, ou à défaut les invitations qui l'attendent. */
   const refreshOrganisation = useCallback(async () => {
-    if (!supabaseBrowser || !session) return;
+    if (!supabaseBrowser || !userId) return;
 
     const { data: membre, error: membreError } = await supabaseBrowser
       .from('membres')
       .select('role, organisations ( id, nom, pays )')
-      .eq('user_id', session.user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: true })
       .limit(1)
       .maybeSingle();
 
     if (membreError) {
       setError(frenchify(membreError.message));
+      setResolvedFor(userId);
       return;
     }
 
@@ -111,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const org = membre.organisations as unknown as { id: string; nom: string; pays: string | null };
       setOrganisation({ ...org, role: membre.role as MembreRole });
       setInvitations([]);
+      setResolvedFor(userId);
       return;
     }
 
@@ -134,11 +172,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         };
       }),
     );
-  }, [session]);
+    setResolvedFor(userId);
+  }, [userId]);
 
+  // Indexé sur le compte, pas sur l'objet session : celui-ci change à chaque
+  // rafraîchissement de jeton, ce qui relancerait la résolution pour rien.
   useEffect(() => {
-    if (session) void refreshOrganisation();
-  }, [session, refreshOrganisation]);
+    if (userId) void refreshOrganisation();
+  }, [userId, refreshOrganisation]);
 
   const signInWithPassword = useCallback(async (mail: string, password: string) => {
     if (!supabaseBrowser) return;
@@ -150,7 +191,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signUpWithPassword = useCallback(async (mail: string, password: string) => {
     if (!supabaseBrowser) return { needsConfirmation: false };
     setError(null);
-    const { data, error: err } = await supabaseBrowser.auth.signUp({ email: mail, password });
+    // Sans `emailRedirectTo`, le lien de confirmation pointe sur la « Site URL » du projet
+    // Supabase — donc sur localhost si elle n'a pas été mise à jour après le déploiement.
+    const { data, error: err } = await supabaseBrowser.auth.signUp({
+      email: mail,
+      password,
+      options: { emailRedirectTo: window.location.origin },
+    });
     if (err) throw new Error(frenchify(err.message));
     // Session absente = Supabase attend la confirmation de l'adresse par e-mail.
     return { needsConfirmation: data.session === null };
@@ -164,6 +211,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       options: { redirectTo: window.location.origin },
     });
     if (err) throw new Error(frenchify(err.message));
+  }, []);
+
+  const requestPasswordReset = useCallback(async (mail: string) => {
+    if (!supabaseBrowser) return;
+    setError(null);
+    const { error: err } = await supabaseBrowser.auth.resetPasswordForEmail(mail, {
+      redirectTo: window.location.origin,
+    });
+    if (err) throw new Error(frenchify(err.message));
+  }, []);
+
+  const updatePassword = useCallback(async (password: string) => {
+    if (!supabaseBrowser) return;
+    setError(null);
+    const { error: err } = await supabaseBrowser.auth.updateUser({ password });
+    if (err) throw new Error(frenchify(err.message));
+    setPasswordRecovery(false);
   }, []);
 
   const signOut = useCallback(async () => {
@@ -218,9 +282,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       organisation,
       invitations,
       error,
+      passwordRecovery,
       signInWithPassword,
       signUpWithPassword,
       signInWithOAuth,
+      requestPasswordReset,
+      updatePassword,
       signOut,
       createOrganisation,
       acceptInvitation,
@@ -228,9 +295,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearError: () => setError(null),
     }),
     [
-      loading, session, email, organisation, invitations, error, signInWithPassword,
-      signUpWithPassword, signInWithOAuth, signOut, createOrganisation, acceptInvitation,
-      refreshOrganisation,
+      loading, session, email, organisation, invitations, error, passwordRecovery,
+      signInWithPassword, signUpWithPassword, signInWithOAuth, requestPasswordReset,
+      updatePassword, signOut, createOrganisation, acceptInvitation, refreshOrganisation,
     ],
   );
 
